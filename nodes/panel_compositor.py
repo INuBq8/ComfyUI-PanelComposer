@@ -1,0 +1,170 @@
+import json
+
+from PIL import Image, ImageColor
+
+from ..utils.compositing import build_panel_mask, fit_image, pil_to_tensor, tensor_to_pil
+from ..utils.geometry import bbox_from_polygon, page_aspect_ratio, solve_dimensions_from_megapixels
+
+FIXED_PRESET_MEGAPIXELS = {"1080p": 2.1, "2K": 3.7, "4K": 8.3}
+
+
+class PanelCompositor:
+    """Stitches user-generated per-panel images into one page, per layout_json.
+    Performs no generation; geometry comes entirely from Node 1's output."""
+
+    CATEGORY = "Manga/Compositing"
+    FUNCTION = "composite"
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("page_image",)
+
+    # `images` is a variable-length list of independently-sized IMAGE tensors
+    # (one per panel) — ComfyUI's native IMAGE batching requires uniform H/W,
+    # so this node opts into list-mode inputs instead of a single batch tensor.
+    INPUT_IS_LIST = True
+    OUTPUT_IS_LIST = (False,)
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "layout_json": ("STRING", {"multiline": True}),
+                "images": ("IMAGE",),
+                "canvas_mode": (["fixed_preset", "fixed_custom", "scale_to_input"],),
+                "fixed_preset_size": (["1080p", "2K", "4K"],),
+                "fixed_custom_megapixels": ("FLOAT", {"default": 2.0, "min": 0.1, "max": 64.0, "step": 0.1}),
+                "page_orientation": (["portrait", "landscape"],),
+                "scale_to_input_mode": (["largest", "smallest"],),
+                "fit_mode": (["cover", "contain", "stretch"],),
+                "scale_algo": (["nearest", "bilinear", "bicubic", "lanczos"], {"default": "lanczos"}),
+                "gutter_px": ("INT", {"default": 6, "min": 0, "max": 256}),
+                "gutter_color": ("STRING", {"default": "#000000"}),
+            }
+        }
+
+    def composite(
+        self,
+        layout_json,
+        images,
+        canvas_mode,
+        fixed_preset_size,
+        fixed_custom_megapixels,
+        page_orientation,
+        scale_to_input_mode,
+        fit_mode,
+        scale_algo,
+        gutter_px,
+        gutter_color,
+    ):
+        # INPUT_IS_LIST wraps every input in a list; `images` is meant to stay
+        # a list (one tensor per panel), the rest are single scalar widgets.
+        layout_json = layout_json[0]
+        canvas_mode = canvas_mode[0]
+        fixed_preset_size = fixed_preset_size[0]
+        fixed_custom_megapixels = fixed_custom_megapixels[0]
+        page_orientation = page_orientation[0]
+        scale_to_input_mode = scale_to_input_mode[0]
+        fit_mode = fit_mode[0]
+        scale_algo = scale_algo[0]
+        gutter_px = gutter_px[0]
+        gutter_color = gutter_color[0]
+
+        panels = self._parse_layout(layout_json)
+
+        if len(images) != len(panels):
+            raise ValueError(
+                f"Panel Compositor: expected {len(panels)} images (one per panel) "
+                f"but received {len(images)}."
+            )
+
+        pil_images = []
+        for idx, img_tensor in enumerate(images):
+            pil_img = tensor_to_pil(img_tensor)
+            if pil_img.width <= 0 or pil_img.height <= 0:
+                raise ValueError(f"Panel Compositor: image at index {idx} has zero width/height.")
+            pil_images.append(pil_img)
+
+        gutter_rgb = ImageColor.getrgb(gutter_color)
+
+        canvas_w, canvas_h = self._compute_canvas_size(
+            panels,
+            pil_images,
+            canvas_mode,
+            fixed_preset_size,
+            fixed_custom_megapixels,
+            page_orientation,
+            scale_to_input_mode,
+        )
+
+        canvas = Image.new("RGB", (canvas_w, canvas_h), gutter_rgb)
+
+        for panel, pil_img in zip(panels, pil_images):
+            min_x, min_y, max_x, max_y = bbox_from_polygon(panel["polygon"])
+            bbox_x0, bbox_y0 = round(min_x * canvas_w), round(min_y * canvas_h)
+            bbox_x1, bbox_y1 = round(max_x * canvas_w), round(max_y * canvas_h)
+            bbox_w, bbox_h = max(1, bbox_x1 - bbox_x0), max(1, bbox_y1 - bbox_y0)
+
+            fitted = fit_image(pil_img, bbox_w, bbox_h, fit_mode, scale_algo, gutter_rgb)
+
+            layer = Image.new("RGB", (canvas_w, canvas_h), gutter_rgb)
+            layer.paste(fitted, (bbox_x0, bbox_y0))
+
+            mask = build_panel_mask(panel["polygon"], canvas_w, canvas_h, gutter_px)
+            canvas = Image.composite(layer, canvas, mask)
+
+        return (pil_to_tensor(canvas),)
+
+    @staticmethod
+    def _parse_layout(layout_json):
+        try:
+            data = json.loads(layout_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Panel Compositor: layout_json failed to parse: {e}")
+
+        if "panels" not in data:
+            raise ValueError("Panel Compositor: layout_json is missing required field 'panels'.")
+
+        panels = data["panels"]
+        for i, panel in enumerate(panels):
+            if "polygon" not in panel or "order" not in panel:
+                raise ValueError(
+                    f"Panel Compositor: panel at position {i} is missing 'polygon' or 'order'."
+                )
+
+        return sorted(panels, key=lambda p: p["order"])
+
+    @staticmethod
+    def _compute_canvas_size(
+        panels,
+        pil_images,
+        canvas_mode,
+        fixed_preset_size,
+        fixed_custom_megapixels,
+        page_orientation,
+        scale_to_input_mode,
+    ):
+        if canvas_mode == "fixed_preset":
+            ar = page_aspect_ratio(page_orientation)
+            mp = FIXED_PRESET_MEGAPIXELS[fixed_preset_size]
+            return solve_dimensions_from_megapixels(ar, mp)
+
+        if canvas_mode == "fixed_custom":
+            ar = page_aspect_ratio(page_orientation)
+            return solve_dimensions_from_megapixels(ar, fixed_custom_megapixels)
+
+        if canvas_mode == "scale_to_input":
+            areas = [img.width * img.height for img in pil_images]
+            ref_idx = (max if scale_to_input_mode == "largest" else min)(
+                range(len(areas)), key=lambda i: areas[i]
+            )
+            min_x, min_y, max_x, max_y = bbox_from_polygon(panels[ref_idx]["polygon"])
+            bbox_w_norm, bbox_h_norm = max_x - min_x, max_y - min_y
+            ref_img = pil_images[ref_idx]
+            canvas_w = ref_img.width / bbox_w_norm
+            canvas_h = ref_img.height / bbox_h_norm
+            return round(canvas_w), round(canvas_h)
+
+        raise ValueError(f"Panel Compositor: unknown canvas_mode {canvas_mode!r}")
+
+
+NODE_CLASS_MAPPINGS = {"PanelCompositor": PanelCompositor}
+NODE_DISPLAY_NAME_MAPPINGS = {"PanelCompositor": "Panel Compositor (Manga)"}
