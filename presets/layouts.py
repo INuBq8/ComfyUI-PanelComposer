@@ -1,94 +1,48 @@
 """Phase 1 fixed panel layouts. Each preset is a list of panel dicts with
-normalized (0-1) polygons, in reading order."""
+normalized (0-1) polygons, in reading order.
+
+The actual preset data (panel polygons + reading-order groupings) lives in
+web/layouts.json, not here — data-driven so adding a new preset is a JSON
+edit, not a code change. It's under web/ (not presets/) specifically so the
+JS live preview (web/panel_layout_preview.js) can fetch the exact same file
+instead of hand-maintaining its own copy, which is what it used to do
+before this and was a standing "keep these two files in sync by hand" risk.
+This module just loads that file once and keeps the rotation/reading-order
+math + the small runtime API the rest of the pack imports.
+"""
+
+import json
+import os
 
 from ..utils.geometry import polygon_centroid
 
+_LAYOUTS_JSON_PATH = os.path.join(os.path.dirname(__file__), "..", "web", "layouts.json")
 
-def _panel(order, polygon):
-    return {"id": order, "order": order, "polygon": polygon}
+with open(_LAYOUTS_JSON_PATH, encoding="utf-8") as _f:
+    _PRESETS = json.load(_f)
 
+LAYOUT_NAMES = list(_PRESETS.keys())
 
-LAYOUTS = {
-    "single_full_page": [
-        _panel(0, [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
-    ],
-    "two_vertical_split": [
-        _panel(0, [[0.0, 0.0], [1.0, 0.0], [1.0, 0.5], [0.0, 0.5]]),
-        _panel(1, [[0.0, 0.5], [1.0, 0.5], [1.0, 1.0], [0.0, 1.0]]),
-    ],
-    "two_horizontal_split": [
-        _panel(0, [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]]),
-        _panel(1, [[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0]]),
-    ],
-    "three_top_split": [
-        _panel(0, [[0.0, 0.0], [0.5, 0.0], [0.5, 0.46], [0.0, 0.46]]),
-        _panel(1, [[0.5, 0.0], [1.0, 0.0], [1.0, 0.46], [0.5, 0.46]]),
-        _panel(2, [[0.0, 0.46], [1.0, 0.46], [1.0, 1.0], [0.0, 1.0]]),
-    ],
-    "four_grid": [
-        _panel(0, [[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]]),
-        _panel(1, [[0.5, 0.0], [1.0, 0.0], [1.0, 0.5], [0.5, 0.5]]),
-        _panel(2, [[0.0, 0.5], [0.5, 0.5], [0.5, 1.0], [0.0, 1.0]]),
-        _panel(3, [[0.5, 0.5], [1.0, 0.5], [1.0, 1.0], [0.5, 1.0]]),
-    ],
-    # Diagonal cut instead of a straight split — both panels are trapezoids.
-    "two_diagonal_split": [
-        _panel(0, [[0.0, 0.0], [1.0, 0.0], [1.0, 0.7], [0.0, 0.3]]),
-        _panel(1, [[0.0, 0.3], [1.0, 0.7], [1.0, 1.0], [0.0, 1.0]]),
-    ],
-    # Three slanted parallelograms, all sharing the same diagonal slope — a
-    # common "dynamic/action" cascade layout in manga.
-    "three_panel_cascade_diagonal": [
-        _panel(0, [[0.0, 0.0], [0.3333, 0.0], [0.4533, 1.0], [0.0, 1.0]]),
-        _panel(1, [[0.3333, 0.0], [0.6667, 0.0], [0.7867, 1.0], [0.4533, 1.0]]),
-        _panel(2, [[0.6667, 0.0], [1.0, 0.0], [1.0, 1.0], [0.7867, 1.0]]),
-    ],
-    # Three non-rectangular panels on top — the two outer ones are trapezoids
-    # (inner edge slants outward toward the bottom), the middle one is a
-    # wedge that tapers down and dips below them — plus one big panel below
-    # with a matching notch cut into its top. Roughly: |__\_/__| over a
-    # full-width panel.
-    "three_wedge_top_split": [
-        _panel(0, [[0.0, 0.0], [0.30, 0.0], [0.40, 0.35], [0.0, 0.35]]),
-        _panel(1, [
-            [0.30, 0.0], [0.70, 0.0], [0.60, 0.35],
-            [0.53, 0.50], [0.47, 0.50], [0.40, 0.35],
-        ]),
-        _panel(2, [[0.70, 0.0], [1.0, 0.0], [1.0, 0.35], [0.60, 0.35]]),
-        _panel(3, [
-            [0.0, 0.35], [0.40, 0.35], [0.47, 0.50], [0.53, 0.50],
-            [0.60, 0.35], [1.0, 0.35], [1.0, 1.0], [0.0, 1.0],
-        ]),
-    ],
-    # Concave L-shaped main panel wrapping a small square inset panel in the
-    # bottom-right corner (e.g. a reaction/detail shot over the main scene).
-    "corner_inset_l_shape": [
-        _panel(0, [
-            [0.0, 0.0], [1.0, 0.0], [1.0, 0.65],
-            [0.65, 0.65], [0.65, 1.0], [0.0, 1.0],
-        ]),
-        _panel(1, [[0.65, 0.65], [1.0, 0.65], [1.0, 1.0], [0.65, 1.0]]),
-    ],
-    # Webtoon-style floating panels — none of the panels touch each other or
-    # the canvas edges, so the surrounding area is just page background (the
-    # first presets that don't tile 100% of the canvas). Panels are offset
-    # rather than perfectly stacked/centered for a more organic feel.
-    "two_floating_panels": [
-        _panel(0, [[0.08, 0.06], [0.72, 0.06], [0.72, 0.42], [0.08, 0.42]]),
-        _panel(1, [[0.28, 0.54], [0.92, 0.54], [0.92, 0.90], [0.28, 0.90]]),
-    ],
-    "three_floating_panels": [
-        _panel(0, [[0.06, 0.05], [0.58, 0.05], [0.58, 0.28], [0.06, 0.28]]),
-        _panel(1, [[0.42, 0.36], [0.94, 0.36], [0.94, 0.60], [0.42, 0.60]]),
-        _panel(2, [[0.10, 0.68], [0.75, 0.68], [0.75, 0.92], [0.10, 0.92]]),
-    ],
+# A flat dropdown of 11+ raw preset keys gets unwieldy, and ComfyUI's combo
+# widget has no native grouping — so the dropdown shown to the user is
+# "Category / Label" strings (grouped by construction: same-category entries
+# share a prefix and sit together in list order) instead of raw keys, with
+# LAYOUT_CHOICE_TO_NAME mapping the selected choice back to the real preset
+# key. `category`/`label` live in layouts.json right alongside each preset's
+# geometry, rather than a separate lookup table, so a new preset can't add
+# geometry but forget to also make itself selectable.
+LAYOUT_CHOICES = [f"{data['category']} / {data['label']}" for data in _PRESETS.values()]
+LAYOUT_CHOICE_TO_NAME = {
+    f"{data['category']} / {data['label']}": name for name, data in _PRESETS.items()
 }
-
-LAYOUT_NAMES = list(LAYOUTS.keys())
 
 
 def get_layout(preset_name):
-    return [dict(p) for p in LAYOUTS[preset_name]]
+    polygons = _PRESETS[preset_name]["panels"]
+    return [
+        {"id": i, "order": i, "polygon": [list(point) for point in polygon]}
+        for i, polygon in enumerate(polygons)
+    ]
 
 
 # Structural grouping of each preset's panels, for reading-order purposes —
@@ -101,19 +55,7 @@ def get_layout(preset_name):
 # is computed from this structure combined with each panel's *rotated*
 # centroid (see apply_reading_order below), so it stays correct under
 # rotation instead of being a fixed table that only works at rotation "0".
-READING_GROUPS = {
-    "single_full_page": [0],
-    "two_vertical_split": [[0], [1]],
-    "two_horizontal_split": [[0, 1]],
-    "three_top_split": [[0, 1], [2]],
-    "four_grid": [[0, 1], [2, 3]],
-    "two_diagonal_split": [[0], [1]],
-    "three_panel_cascade_diagonal": [[0, 1, 2]],
-    "three_wedge_top_split": [[0, 1, 2], [3]],
-    "corner_inset_l_shape": [[0], [1]],
-    "two_floating_panels": [[0], [1]],
-    "three_floating_panels": [[0], [1], [2]],
-}
+READING_GROUPS = {name: data["reading_groups"] for name, data in _PRESETS.items()}
 
 
 def _group_centroid(group, centroids):

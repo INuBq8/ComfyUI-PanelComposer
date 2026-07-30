@@ -42,7 +42,7 @@ class PanelCompositor:
                 "fixed_custom_megapixels": ("FLOAT", {"default": 2.0, "min": 0.1, "max": 64.0, "step": 0.1}),
                 "page_orientation": (["auto", "portrait", "landscape"],),
                 "scale_to_input_mode": (["largest", "smallest"],),
-                "fit_mode": (["cover", "contain", "stretch", "fit_to_shape"],),
+                "fit_mode": (["cover", "contain", "stretch", "fit_to_shape (expiermental)"],),
                 "scale_algo": (["nearest", "bilinear", "bicubic", "lanczos"], {"default": "lanczos"}),
                 "gutter_px": ("INT", {"default": 6, "min": 0, "max": 256}),
                 "gutter_color": ("STRING", {"default": "#000000"}),

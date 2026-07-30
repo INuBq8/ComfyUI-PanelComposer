@@ -1,97 +1,78 @@
 import { app } from "../../scripts/app.js";
 
-// Mirrors presets/layouts.py — these are Phase 1's fixed presets, so keep
-// this in sync by hand if that file changes. Drawn entirely client-side so
-// the preview updates instantly on widget change, with no execution needed.
-const LAYOUTS = {
-    single_full_page: [
-        { order: 0, polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]] },
-    ],
-    two_vertical_split: [
-        { order: 0, polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 0.5], [0.0, 0.5]] },
-        { order: 1, polygon: [[0.0, 0.5], [1.0, 0.5], [1.0, 1.0], [0.0, 1.0]] },
-    ],
-    two_horizontal_split: [
-        { order: 0, polygon: [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]] },
-        { order: 1, polygon: [[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0]] },
-    ],
-    three_top_split: [
-        { order: 0, polygon: [[0.0, 0.0], [0.5, 0.0], [0.5, 0.46], [0.0, 0.46]] },
-        { order: 1, polygon: [[0.5, 0.0], [1.0, 0.0], [1.0, 0.46], [0.5, 0.46]] },
-        { order: 2, polygon: [[0.0, 0.46], [1.0, 0.46], [1.0, 1.0], [0.0, 1.0]] },
-    ],
-    four_grid: [
-        { order: 0, polygon: [[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.5]] },
-        { order: 1, polygon: [[0.5, 0.0], [1.0, 0.0], [1.0, 0.5], [0.5, 0.5]] },
-        { order: 2, polygon: [[0.0, 0.5], [0.5, 0.5], [0.5, 1.0], [0.0, 1.0]] },
-        { order: 3, polygon: [[0.5, 0.5], [1.0, 0.5], [1.0, 1.0], [0.5, 1.0]] },
-    ],
-    two_diagonal_split: [
-        { order: 0, polygon: [[0.0, 0.0], [1.0, 0.0], [1.0, 0.7], [0.0, 0.3]] },
-        { order: 1, polygon: [[0.0, 0.3], [1.0, 0.7], [1.0, 1.0], [0.0, 1.0]] },
-    ],
-    three_panel_cascade_diagonal: [
-        { order: 0, polygon: [[0.0, 0.0], [0.3333, 0.0], [0.4533, 1.0], [0.0, 1.0]] },
-        { order: 1, polygon: [[0.3333, 0.0], [0.6667, 0.0], [0.7867, 1.0], [0.4533, 1.0]] },
-        { order: 2, polygon: [[0.6667, 0.0], [1.0, 0.0], [1.0, 1.0], [0.7867, 1.0]] },
-    ],
-    three_wedge_top_split: [
-        { order: 0, polygon: [[0.0, 0.0], [0.30, 0.0], [0.40, 0.35], [0.0, 0.35]] },
-        {
-            order: 1,
-            polygon: [
-                [0.30, 0.0], [0.70, 0.0], [0.60, 0.35],
-                [0.53, 0.50], [0.47, 0.50], [0.40, 0.35],
-            ],
-        },
-        { order: 2, polygon: [[0.70, 0.0], [1.0, 0.0], [1.0, 0.35], [0.60, 0.35]] },
-        {
-            order: 3,
-            polygon: [
-                [0.0, 0.35], [0.40, 0.35], [0.47, 0.50], [0.53, 0.50],
-                [0.60, 0.35], [1.0, 0.35], [1.0, 1.0], [0.0, 1.0],
-            ],
-        },
-    ],
-    corner_inset_l_shape: [
-        {
-            order: 0,
-            polygon: [
-                [0.0, 0.0], [1.0, 0.0], [1.0, 0.65],
-                [0.65, 0.65], [0.65, 1.0], [0.0, 1.0],
-            ],
-        },
-        { order: 1, polygon: [[0.65, 0.65], [1.0, 0.65], [1.0, 1.0], [0.65, 1.0]] },
-    ],
-    two_floating_panels: [
-        { order: 0, polygon: [[0.08, 0.06], [0.72, 0.06], [0.72, 0.42], [0.08, 0.42]] },
-        { order: 1, polygon: [[0.28, 0.54], [0.92, 0.54], [0.92, 0.90], [0.28, 0.90]] },
-    ],
-    three_floating_panels: [
-        { order: 0, polygon: [[0.06, 0.05], [0.58, 0.05], [0.58, 0.28], [0.06, 0.28]] },
-        { order: 1, polygon: [[0.42, 0.36], [0.94, 0.36], [0.94, 0.60], [0.42, 0.60]] },
-        { order: 2, polygon: [[0.10, 0.68], [0.75, 0.68], [0.75, 0.92], [0.10, 0.92]] },
-    ],
-};
+// Preset data (panel polygons + reading-order groupings) lives in
+// layouts.json, right next to this file — presets/layouts.py loads that
+// same file from disk, so this fetch is what keeps the two in sync instead
+// of hand-maintaining a duplicate copy here (which is what this file used
+// to do, and was a standing "forgot to update the JS mirror" risk). Fetched
+// once and cached; every node instance's redraw awaits the same promise.
+const LAYOUTS_URL = new URL("./layouts.json", import.meta.url);
+let presetsPromise = null;
 
-// Mirrors presets/layouts.py's READING_GROUPS — rotation-invariant structural
-// grouping (which panels were originally peers in a row/column). The actual
-// order is computed from this plus each panel's *rotated* centroid (see
-// applyReadingOrder below), so it adapts correctly to canvas_rotation
-// instead of only being valid at rotation "0".
-const READING_GROUPS = {
-    single_full_page: [0],
-    two_vertical_split: [[0], [1]],
-    two_horizontal_split: [[0, 1]],
-    three_top_split: [[0, 1], [2]],
-    four_grid: [[0, 1], [2, 3]],
-    two_diagonal_split: [[0], [1]],
-    three_panel_cascade_diagonal: [[0, 1, 2]],
-    three_wedge_top_split: [[0, 1, 2], [3]],
-    corner_inset_l_shape: [[0], [1]],
-    two_floating_panels: [[0], [1]],
-    three_floating_panels: [[0], [1], [2]],
-};
+function loadPresets() {
+    if (!presetsPromise) {
+        presetsPromise = fetch(LAYOUTS_URL)
+            .then((r) => r.json())
+            .catch((err) => {
+                console.error("Manga.PanelLayoutPreview: failed to load layouts.json", err);
+                return {};
+            });
+    }
+    return presetsPromise;
+}
+
+function panelsFromPreset(presets, presetName) {
+    const polygons = presets[presetName]?.panels ?? presets.single_full_page?.panels ?? [];
+    return polygons.map((polygon, order) => ({ order, polygon }));
+}
+
+// layout_preset's own dropdown shows "Category / Label" (grouped by
+// construction — same-category entries share a prefix and sit together in
+// list order), not raw preset keys — Python builds that same string from
+// each preset's category+label (see presets/layouts.py's LAYOUT_CHOICES)
+// and resolves it back via LAYOUT_CHOICE_TO_NAME. This does the same
+// resolution here, from the same category/label fields in layouts.json, so
+// the preview draws the right preset regardless of which display string is
+// currently selected.
+function presetKeyFromChoice(presets, choiceValue) {
+    for (const [name, data] of Object.entries(presets)) {
+        if (`${data.category} / ${data.label}` === choiceValue) return name;
+    }
+    return choiceValue; // already a raw key (e.g. the panelsFromPreset fallback)
+}
+
+// LiteGraph's native combo widget won't cascade on "Category / Label" text,
+// and overriding its click via a `.mouse` hook (tried first) turned out not
+// to fire at all in practice — apparently this ComfyUI's bundled LiteGraph
+// doesn't dispatch through that hook for combo-type widgets the way some
+// other versions do, and there's no way to confirm the internals from here.
+// Rather than keep guessing at undocumented click-dispatch behavior, this
+// sidesteps LiteGraph's widget system entirely for the actual picking UI: a
+// real HTML <select> with <optgroup> — genuinely nested, in every browser,
+// by the HTML spec, not by hoping some internal hook fires. It lives in the
+// DOM preview box (already a real DOM element we fully control) and just
+// writes its choice into layout_preset's `.value` + fires its `.callback`,
+// the same two calls any picker needs to make regardless of how it opens.
+function populateGroupedSelect(select, presets, currentValue) {
+    select.innerHTML = "";
+    const byCategory = new Map();
+    for (const data of Object.values(presets)) {
+        if (!byCategory.has(data.category)) byCategory.set(data.category, []);
+        byCategory.get(data.category).push(data.label);
+    }
+    for (const [category, labels] of byCategory) {
+        const group = document.createElement("optgroup");
+        group.label = category;
+        for (const label of labels) {
+            const opt = document.createElement("option");
+            opt.value = `${category} / ${label}`;
+            opt.textContent = label;
+            group.appendChild(opt);
+        }
+        select.appendChild(group);
+    }
+    select.value = currentValue;
+}
 
 function groupCentroid(group, centroids) {
     if (typeof group === "number") return centroids[group];
@@ -130,8 +111,7 @@ function orderedIds(group, centroids, readingOrder) {
     return ordered;
 }
 
-function applyReadingOrder(panels, readingOrder, presetName) {
-    const group = READING_GROUPS[presetName];
+function applyReadingOrder(panels, readingOrder, group) {
     if (!group) return [...panels].sort((a, b) => a.order - b.order);
 
     const centroids = {};
@@ -337,11 +317,40 @@ app.registerExtension({
                 position: relative;
                 box-sizing: border-box;
                 width: 100%;
+                display: flex;
+                flex-direction: column;
             `;
 
+            // ── LAYOUT PICKER (real <optgroup> nesting — see populateGroupedSelect
+            // above for why this isn't a LiteGraph widget) ────────────────────
+            const pickerBar = document.createElement("div");
+            pickerBar.style.cssText = `
+                flex: 0 0 auto;
+                padding: 4px;
+                border-bottom: 1px solid ${COLOR_BORDER};
+                box-sizing: border-box;
+            `;
+            const presetSelect = document.createElement("select");
+            presetSelect.style.cssText = `
+                width: 100%;
+                background: #1b1b26;
+                color: #e6e6e6;
+                border: 1px solid ${COLOR_BORDER};
+                border-radius: 3px;
+                padding: 3px 4px;
+                font-size: 11px;
+                font-family: inherit;
+                box-sizing: border-box;
+            `;
+            pickerBar.appendChild(presetSelect);
+            previewBox.appendChild(pickerBar);
+
+            const canvasWrap = document.createElement("div");
+            canvasWrap.style.cssText = "flex:1 1 auto; min-height:0; position:relative;";
             const canvas = document.createElement("canvas");
             canvas.style.cssText = "display:block;width:100%;height:100%;";
-            previewBox.appendChild(canvas);
+            canvasWrap.appendChild(canvas);
+            previewBox.appendChild(canvasWrap);
 
             const resizeHandle = document.createElement("div");
             resizeHandle.title = "Drag to resize preview";
@@ -367,18 +376,23 @@ app.registerExtension({
                 return [width, previewBox.offsetHeight + 8];
             };
 
+            let presets = null; // set once loadPresets() resolves, below
+
             const redraw = () => {
+                if (!presets) return; // not loaded yet — loadPresets().then(redraw) below covers first paint
+
                 const presetWidget = node.widgets.find((w) => w.name === "layout_preset");
                 const arWidget = node.widgets.find((w) => w.name === "aspect_ratio");
                 const orientationWidget = node.widgets.find((w) => w.name === "page_orientation");
                 const rotationWidget = node.widgets.find((w) => w.name === "canvas_rotation");
                 const readingOrderWidget = node.widgets.find((w) => w.name === "reading_order");
 
-                const presetName = presetWidget?.value ?? "single_full_page";
+                const presetName = presetKeyFromChoice(presets, presetWidget?.value ?? "single_full_page");
                 const rotation = rotationWidget?.value ?? "0";
-                let panels = LAYOUTS[presetName] ?? LAYOUTS.single_full_page;
+                let panels = panelsFromPreset(presets, presetName);
                 panels = applyRotation(panels, rotation);
-                panels = applyReadingOrder(panels, readingOrderWidget?.value ?? "left_to_right", presetName);
+                const group = presets[presetName]?.reading_groups;
+                panels = applyReadingOrder(panels, readingOrderWidget?.value ?? "left_to_right", group);
 
                 const orientation = orientationWidget?.value ?? "portrait";
                 const rawAr = parseAspectRatio(arWidget?.value ?? "1:1 (Square)");
@@ -433,7 +447,33 @@ app.registerExtension({
                 redraw();
             };
 
-            requestAnimationFrame(redraw);
+            loadPresets().then((loaded) => {
+                presets = loaded;
+
+                const presetWidget = node.widgets.find((w) => w.name === "layout_preset");
+                if (presetWidget) {
+                    populateGroupedSelect(presetSelect, presets, presetWidget.value);
+                    presetSelect.addEventListener("change", () => {
+                        presetWidget.value = presetSelect.value;
+                        presetWidget.callback?.(presetSelect.value, app.canvas, node, null, null);
+                        redraw();
+                    });
+
+                    // The <select> above is now the real picker — collapse the
+                    // native flat-list widget so there's still exactly one
+                    // visible control, not two. Its value keeps working exactly
+                    // as before (still the actual serialized backend input);
+                    // this only changes how much vertical space it draws as.
+                    presetWidget.computeSize = () => [0, -4];
+                    try {
+                        node.setSize(node.computeSize());
+                    } catch (err) {
+                        console.warn("Manga.PanelLayoutPreview: couldn't resize node after hiding layout_preset", err);
+                    }
+                }
+
+                requestAnimationFrame(redraw);
+            });
 
             return result;
         };

@@ -26,12 +26,21 @@ class ListGetItem:
 
     def get_item(self, list_or_tuple, index):
         try:
-            return (list_or_tuple[index],)
-        except (IndexError, TypeError, KeyError) as e:
-            length = len(list_or_tuple) if hasattr(list_or_tuple, "__len__") else "unknown"
-            raise ValueError(
-                f"List Get Item: failed to index into input (length={length}) at index {index}: {e}"
-            )
+            length = len(list_or_tuple)
+        except TypeError as e:
+            raise ValueError(f"List Get Item: input isn't indexable/has no length: {e}")
+        if length == 0:
+            raise ValueError("List Get Item: input is empty, there's no item to return.")
+
+        # Out-of-range clamps to the nearest end (too high -> last item, too
+        # low -> first item) instead of failing — in-range negative indices
+        # (Python's -1 == last, etc.) still work exactly as before, since
+        # clamping into [-length, length-1] is a no-op for anything already
+        # in that range.
+        clamped = max(-length, min(index, length - 1))
+        if clamped != index:
+            print(f"List Get Item: index {index} out of range (length={length}), clamped to {clamped}.")
+        return (list_or_tuple[clamped],)
 
 
 class TupleUnpack:

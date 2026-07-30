@@ -1,7 +1,8 @@
 import json
 
 from ..presets.layouts import (
-    LAYOUT_NAMES,
+    LAYOUT_CHOICE_TO_NAME,
+    LAYOUT_CHOICES,
     apply_reading_order,
     apply_rotation,
     get_layout,
@@ -29,8 +30,8 @@ class PanelLayoutProvider:
     from layout_json instead of deciding independently, so the two nodes
     can't quietly disagree on page shape. The page layout is shown directly
     on the node — drawn client-side, live, with no execution needed — see
-    web/panel_layout_preview.js, which mirrors the preset polygons from
-    presets/layouts.py and this same orientation math.
+    web/panel_layout_preview.js, which fetches the same web/layouts.json
+    presets/layouts.py loads and mirrors this same orientation math.
 
     area_image/area_colors are a shortcut for regional conditioning: rather
     than a downstream workflow re-deriving each panel's mask from
@@ -48,7 +49,7 @@ class PanelLayoutProvider:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "layout_preset": (LAYOUT_NAMES,),
+                "layout_preset": (LAYOUT_CHOICES,),
                 "reading_order": (["left_to_right", "right_to_left"],),
                 "canvas_rotation": (["0", "90", "180", "270"],),
                 "aspect_ratio": (ASPECT_RATIOS,),
@@ -74,6 +75,10 @@ class PanelLayoutProvider:
         megapixels,
         multiple,
     ):
+        # The widget shows "Category / Label" (grouped dropdown); resolve it
+        # back to the actual preset key everything below expects.
+        layout_preset = LAYOUT_CHOICE_TO_NAME[layout_preset]
+
         # Rotation only rotates the panel polygons — it does not touch the
         # page's own shape. aspect_ratio/page_orientation alone decide the
         # canvas; a rotated layout is fit onto that same, unchanged canvas.
