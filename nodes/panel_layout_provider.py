@@ -6,6 +6,7 @@ from ..presets.layouts import (
     apply_rotation,
     get_layout,
 )
+from ..utils.compositing import pil_to_tensor
 from ..utils.geometry import (
     ASPECT_RATIO_CHOICES,
     FIXED_PRESET_MEGAPIXELS,
@@ -14,25 +15,34 @@ from ..utils.geometry import (
     resolve_oriented_aspect_ratio,
     solve_dimensions_from_megapixels,
 )
+from ..utils.region_map import render_region_map
 
 ASPECT_RATIOS = list(ASPECT_RATIO_CHOICES.keys())
 FIXED_PRESET_SIZES = list(FIXED_PRESET_MEGAPIXELS.keys())
 
 
 class PanelLayoutProvider:
-    """Phase 1: outputs panel geometry from a fixed preset. Never touches pixels.
+    """Phase 1: outputs panel geometry from a fixed preset. Never touches pixels
+    for the actual page (area_image is the one exception — see below).
     Also decides the actual page canvas size/shape (orientation + aspect_ratio
     + resolution) — Panel Compositor's 'auto' canvas_mode reads it straight
     from layout_json instead of deciding independently, so the two nodes
     can't quietly disagree on page shape. The page layout is shown directly
     on the node — drawn client-side, live, with no execution needed — see
     web/panel_layout_preview.js, which mirrors the preset polygons from
-    presets/layouts.py and this same orientation math."""
+    presets/layouts.py and this same orientation math.
+
+    area_image/area_colors are a shortcut for regional conditioning: rather
+    than a downstream workflow re-deriving each panel's mask from
+    layout_json's polygons by hand, area_image is a flat-color region map
+    (one solid, distinct color per panel, index-aligned with area_colors'
+    decimal 0xRRGGBB integers) that can be fed straight into an
+    exact-color-match/mask node."""
 
     CATEGORY = "Manga/Layout"
     FUNCTION = "get_layout"
-    RETURN_TYPES = ("STRING", "PANEL_DIMENSIONS")
-    RETURN_NAMES = ("layout_json", "panel_dimensions")
+    RETURN_TYPES = ("STRING", "PANEL_DIMENSIONS", "IMAGE", "COLOR_LIST")
+    RETURN_NAMES = ("layout_json", "panel_dimensions", "area_image", "area_colors")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -95,7 +105,11 @@ class PanelLayoutProvider:
             "canvas_width": canvas_width,
             "canvas_height": canvas_height,
         })
-        return (layout_json, panel_dimensions)
+
+        region_map_image, area_colors = render_region_map(panels, canvas_width, canvas_height)
+        area_image = pil_to_tensor(region_map_image)
+
+        return (layout_json, panel_dimensions, area_image, area_colors)
 
 
 NODE_CLASS_MAPPINGS = {"PanelLayoutProvider": PanelLayoutProvider}

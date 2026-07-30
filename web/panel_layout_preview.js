@@ -63,6 +63,15 @@ const LAYOUTS = {
         },
         { order: 1, polygon: [[0.65, 0.65], [1.0, 0.65], [1.0, 1.0], [0.65, 1.0]] },
     ],
+    two_floating_panels: [
+        { order: 0, polygon: [[0.08, 0.06], [0.72, 0.06], [0.72, 0.42], [0.08, 0.42]] },
+        { order: 1, polygon: [[0.28, 0.54], [0.92, 0.54], [0.92, 0.90], [0.28, 0.90]] },
+    ],
+    three_floating_panels: [
+        { order: 0, polygon: [[0.06, 0.05], [0.58, 0.05], [0.58, 0.28], [0.06, 0.28]] },
+        { order: 1, polygon: [[0.42, 0.36], [0.94, 0.36], [0.94, 0.60], [0.42, 0.60]] },
+        { order: 2, polygon: [[0.10, 0.68], [0.75, 0.68], [0.75, 0.92], [0.10, 0.92]] },
+    ],
 };
 
 // Mirrors presets/layouts.py's READING_GROUPS — rotation-invariant structural
@@ -80,6 +89,8 @@ const READING_GROUPS = {
     three_panel_cascade_diagonal: [[0, 1, 2]],
     three_wedge_top_split: [[0, 1, 2], [3]],
     corner_inset_l_shape: [[0], [1]],
+    two_floating_panels: [[0], [1]],
+    three_floating_panels: [[0], [1], [2]],
 };
 
 function groupCentroid(group, centroids) {
