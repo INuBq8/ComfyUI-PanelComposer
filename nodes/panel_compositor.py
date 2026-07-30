@@ -42,7 +42,7 @@ class PanelCompositor:
                 "fixed_custom_megapixels": ("FLOAT", {"default": 2.0, "min": 0.1, "max": 64.0, "step": 0.1}),
                 "page_orientation": (["auto", "portrait", "landscape"],),
                 "scale_to_input_mode": (["largest", "smallest"],),
-                "fit_mode": (["cover", "contain", "stretch"],),
+                "fit_mode": (["cover", "contain", "stretch", "fit_to_shape"],),
                 "scale_algo": (["nearest", "bilinear", "bicubic", "lanczos"], {"default": "lanczos"}),
                 "gutter_px": ("INT", {"default": 6, "min": 0, "max": 256}),
                 "gutter_color": ("STRING", {"default": "#000000"}),
@@ -131,7 +131,12 @@ class PanelCompositor:
             bbox_w, bbox_h = max(1, bbox_x1 - bbox_x0), max(1, bbox_y1 - bbox_y0)
 
             if i < len(pil_images):
-                fitted = fit_image(pil_images[i], bbox_w, bbox_h, fit_mode, scale_algo, gutter_rgb)
+                polygon_local = None
+                if fit_mode == "fit_to_shape":
+                    polygon_local = [
+                        (x * canvas_w - bbox_x0, y * canvas_h - bbox_y0) for x, y in panel["polygon"]
+                    ]
+                fitted = fit_image(pil_images[i], bbox_w, bbox_h, fit_mode, scale_algo, gutter_rgb, polygon_local)
             else:
                 fitted = render_placeholder(bbox_w, bbox_h, panel["order"], len(panels))
 
