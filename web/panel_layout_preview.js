@@ -329,10 +329,39 @@ app.registerExtension({
                 padding: 4px;
                 border-bottom: 1px solid ${COLOR_BORDER};
                 box-sizing: border-box;
+                display: flex;
+                gap: 4px;
+                align-items: stretch;
             `;
+
+            function makeStepButton(label, title) {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.textContent = label;
+                btn.title = title;
+                btn.style.cssText = `
+                    flex: 0 0 auto;
+                    width: 20px;
+                    background: #1b1b26;
+                    color: #9a9ab0;
+                    border: 1px solid ${COLOR_BORDER};
+                    border-radius: 3px;
+                    font-size: 11px;
+                    line-height: 1;
+                    cursor: pointer;
+                    padding: 0;
+                `;
+                btn.addEventListener("mouseenter", () => (btn.style.color = COLOR_ACCENT));
+                btn.addEventListener("mouseleave", () => (btn.style.color = "#9a9ab0"));
+                return btn;
+            }
+            const prevButton = makeStepButton("◀", "Previous layout");
+            const nextButton = makeStepButton("▶", "Next layout");
+
             const presetSelect = document.createElement("select");
             presetSelect.style.cssText = `
-                width: 100%;
+                flex: 1 1 auto;
+                min-width: 0;
                 background: #1b1b26;
                 color: #e6e6e6;
                 border: 1px solid ${COLOR_BORDER};
@@ -342,7 +371,9 @@ app.registerExtension({
                 font-family: inherit;
                 box-sizing: border-box;
             `;
+            pickerBar.appendChild(prevButton);
             pickerBar.appendChild(presetSelect);
+            pickerBar.appendChild(nextButton);
             previewBox.appendChild(pickerBar);
 
             const canvasWrap = document.createElement("div");
@@ -453,11 +484,27 @@ app.registerExtension({
                 const presetWidget = node.widgets.find((w) => w.name === "layout_preset");
                 if (presetWidget) {
                     populateGroupedSelect(presetSelect, presets, presetWidget.value);
-                    presetSelect.addEventListener("change", () => {
+
+                    const applySelection = () => {
                         presetWidget.value = presetSelect.value;
                         presetWidget.callback?.(presetSelect.value, app.canvas, node, null, null);
                         redraw();
-                    });
+                    };
+                    presetSelect.addEventListener("change", applySelection);
+
+                    // Step through presetSelect.options in DOM order — a flat
+                    // walk across every <optgroup> in turn, same order as the
+                    // dropdown itself, wrapping at both ends. Programmatically
+                    // setting .selectedIndex doesn't fire "change" on its own,
+                    // so both buttons call applySelection directly afterward.
+                    const step = (delta) => {
+                        const count = presetSelect.options.length;
+                        if (count === 0) return;
+                        presetSelect.selectedIndex = (presetSelect.selectedIndex + delta + count) % count;
+                        applySelection();
+                    };
+                    prevButton.addEventListener("click", () => step(-1));
+                    nextButton.addEventListener("click", () => step(1));
 
                     // The <select> above is now the real picker — collapse the
                     // native flat-list widget so there's still exactly one
