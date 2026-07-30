@@ -35,6 +35,24 @@ const LAYOUTS = {
         { order: 1, polygon: [[0.3333, 0.0], [0.6667, 0.0], [0.7867, 1.0], [0.4533, 1.0]] },
         { order: 2, polygon: [[0.6667, 0.0], [1.0, 0.0], [1.0, 1.0], [0.7867, 1.0]] },
     ],
+    three_wedge_top_split: [
+        { order: 0, polygon: [[0.0, 0.0], [0.30, 0.0], [0.40, 0.35], [0.0, 0.35]] },
+        {
+            order: 1,
+            polygon: [
+                [0.30, 0.0], [0.70, 0.0], [0.60, 0.35],
+                [0.53, 0.50], [0.47, 0.50], [0.40, 0.35],
+            ],
+        },
+        { order: 2, polygon: [[0.70, 0.0], [1.0, 0.0], [1.0, 0.35], [0.60, 0.35]] },
+        {
+            order: 3,
+            polygon: [
+                [0.0, 0.35], [0.40, 0.35], [0.47, 0.50], [0.53, 0.50],
+                [0.60, 0.35], [1.0, 0.35], [1.0, 1.0], [0.0, 1.0],
+            ],
+        },
+    ],
     corner_inset_l_shape: [
         {
             order: 0,
@@ -46,6 +64,89 @@ const LAYOUTS = {
         { order: 1, polygon: [[0.65, 0.65], [1.0, 0.65], [1.0, 1.0], [0.65, 1.0]] },
     ],
 };
+
+// Mirrors presets/layouts.py's READING_GROUPS — rotation-invariant structural
+// grouping (which panels were originally peers in a row/column). The actual
+// order is computed from this plus each panel's *rotated* centroid (see
+// applyReadingOrder below), so it adapts correctly to canvas_rotation
+// instead of only being valid at rotation "0".
+const READING_GROUPS = {
+    single_full_page: [0],
+    two_vertical_split: [[0], [1]],
+    two_horizontal_split: [[0, 1]],
+    three_top_split: [[0, 1], [2]],
+    four_grid: [[0, 1], [2, 3]],
+    two_diagonal_split: [[0], [1]],
+    three_panel_cascade_diagonal: [[0, 1, 2]],
+    three_wedge_top_split: [[0, 1, 2], [3]],
+    corner_inset_l_shape: [[0], [1]],
+};
+
+function groupCentroid(group, centroids) {
+    if (typeof group === "number") return centroids[group];
+    const points = group.map((g) => groupCentroid(g, centroids));
+    return [
+        points.reduce((s, p) => s + p[0], 0) / points.length,
+        points.reduce((s, p) => s + p[1], 0) / points.length,
+    ];
+}
+
+// Sorts at each nesting level by whichever axis (X or Y) has more spread —
+// Y (rows) is never reversed by reading order, X (left-right within a row)
+// reverses for right_to_left. Mirrors presets/layouts.py's _ordered_ids.
+function orderedIds(group, centroids, readingOrder) {
+    if (typeof group === "number") return [group];
+
+    const subCentroids = group.map((g) => groupCentroid(g, centroids));
+    const xs = subCentroids.map((c) => c[0]);
+    const ys = subCentroids.map((c) => c[1]);
+    const ySpread = ys.length > 1 ? Math.max(...ys) - Math.min(...ys) : 0;
+    const xSpread = xs.length > 1 ? Math.max(...xs) - Math.min(...xs) : 0;
+
+    const indices = group.map((_, i) => i);
+    if (ySpread >= xSpread) {
+        indices.sort((a, b) => subCentroids[a][1] - subCentroids[b][1]);
+    } else {
+        indices.sort((a, b) =>
+            readingOrder === "right_to_left"
+                ? subCentroids[b][0] - subCentroids[a][0]
+                : subCentroids[a][0] - subCentroids[b][0]
+        );
+    }
+
+    const ordered = [];
+    for (const i of indices) ordered.push(...orderedIds(group[i], centroids, readingOrder));
+    return ordered;
+}
+
+function applyReadingOrder(panels, readingOrder, presetName) {
+    const group = READING_GROUPS[presetName];
+    if (!group) return [...panels].sort((a, b) => a.order - b.order);
+
+    const centroids = {};
+    for (const p of panels) centroids[p.order] = polygonCentroid(p.polygon);
+    const ids = orderedIds(group, centroids, readingOrder);
+    const orderById = {};
+    ids.forEach((id, order) => (orderById[id] = order));
+
+    panels = panels.map((p) => ({ ...p, order: orderById[p.order] }));
+    return [...panels].sort((a, b) => a.order - b.order);
+}
+
+// Rotation only rotates the panel polygons — it does not touch the page's
+// own shape (aspect_ratio/page_orientation alone decide the canvas).
+const ROTATION_TRANSFORMS = {
+    "0": ([x, y]) => [x, y],
+    "90": ([x, y]) => [1 - y, x],
+    "180": ([x, y]) => [1 - x, 1 - y],
+    "270": ([x, y]) => [y, 1 - x],
+};
+
+function applyRotation(panels, rotation) {
+    if (rotation === "0") return panels;
+    const transform = ROTATION_TRANSFORMS[rotation];
+    return panels.map((p) => ({ ...p, polygon: p.polygon.map(transform) }));
+}
 
 // ── PREVIEW BOX ──────────────────────────────────────────────────────────────
 const PREVIEW_HEIGHT     = 260;   // default height of the preview box (px)
@@ -59,9 +160,29 @@ const COLOR_ACCENT = "#4a90d9";
 const COLOR_PAGE_BG = "#f5f5f5";
 const COLOR_INK = "#141414";
 
-function parseAspectRatio(ratioStr) {
-    const [w, h] = String(ratioStr).split(":").map(Number);
-    return w / h;
+// Mirrors utils/geometry.py's ASPECT_RATIO_CHOICES — keep in sync by hand.
+const ASPECT_RATIO_CHOICES = {
+    "1:1 (Square)": 1.0,
+    "9:7": 9 / 7,
+    "4:3 (Standard)": 4 / 3,
+    "A4": Math.SQRT2,
+    "19:13": 19 / 13,
+    "3:2 (Classic Photo)": 3 / 2,
+    "7:4": 7 / 4,
+    "16:9 (Widescreen)": 16 / 9,
+    "21:9 (Ultrawide)": 21 / 9,
+    "12:5 (Cinemascope)": 12 / 5,
+};
+
+function parseAspectRatio(ratioChoice) {
+    return ASPECT_RATIO_CHOICES[ratioChoice] ?? 1.0;
+}
+
+// Mirrors utils/geometry.py's resolve_oriented_aspect_ratio: aspect_ratio
+// picks the ratio's magnitude, page_orientation decides which way it points.
+function resolveOrientedAspectRatio(ratioMagnitude, orientation) {
+    const magnitude = Math.max(ratioMagnitude, 1 / ratioMagnitude);
+    return orientation === "landscape" ? magnitude : 1 / magnitude;
 }
 
 // Area-weighted centroid, robust for concave polygons (e.g. the L-shape).
@@ -238,8 +359,19 @@ app.registerExtension({
             const redraw = () => {
                 const presetWidget = node.widgets.find((w) => w.name === "layout_preset");
                 const arWidget = node.widgets.find((w) => w.name === "aspect_ratio");
-                const panels = LAYOUTS[presetWidget?.value] ?? LAYOUTS.single_full_page;
-                const ar = parseAspectRatio(arWidget?.value ?? "2:3");
+                const orientationWidget = node.widgets.find((w) => w.name === "page_orientation");
+                const rotationWidget = node.widgets.find((w) => w.name === "canvas_rotation");
+                const readingOrderWidget = node.widgets.find((w) => w.name === "reading_order");
+
+                const presetName = presetWidget?.value ?? "single_full_page";
+                const rotation = rotationWidget?.value ?? "0";
+                let panels = LAYOUTS[presetName] ?? LAYOUTS.single_full_page;
+                panels = applyRotation(panels, rotation);
+                panels = applyReadingOrder(panels, readingOrderWidget?.value ?? "left_to_right", presetName);
+
+                const orientation = orientationWidget?.value ?? "portrait";
+                const rawAr = parseAspectRatio(arWidget?.value ?? "1:1 (Square)");
+                const ar = resolveOrientedAspectRatio(rawAr, orientation);
                 drawLayoutPreview(canvas, panels, ar);
                 node.setDirtyCanvas(true, true);
             };
@@ -271,7 +403,7 @@ app.registerExtension({
                 resizeHandle.addEventListener("pointerup", onUp);
             });
 
-            for (const name of ["layout_preset", "aspect_ratio"]) {
+            for (const name of ["layout_preset", "aspect_ratio", "page_orientation", "canvas_rotation", "reading_order"]) {
                 const targetWidget = node.widgets.find((w) => w.name === name);
                 if (!targetWidget) continue;
                 const origCallback = targetWidget.callback;

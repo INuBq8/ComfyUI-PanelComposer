@@ -3,9 +3,16 @@ import json
 from PIL import Image, ImageColor
 
 from ..utils.compositing import build_panel_mask, fit_image, pil_to_tensor, tensor_to_pil
-from ..utils.geometry import bbox_from_polygon, page_aspect_ratio, solve_dimensions_from_megapixels
+from ..utils.geometry import (
+    ASPECT_RATIO_CHOICES,
+    FIXED_PRESET_MEGAPIXELS,
+    bbox_from_polygon,
+    resolve_oriented_aspect_ratio,
+    solve_dimensions_from_megapixels,
+)
+from ..utils.placeholder import render_placeholder
 
-FIXED_PRESET_MEGAPIXELS = {"1080p": 2.1, "2K": 3.7, "4K": 8.3}
+ASPECT_RATIOS = list(ASPECT_RATIO_CHOICES.keys())
 
 
 class PanelCompositor:
@@ -29,10 +36,11 @@ class PanelCompositor:
             "required": {
                 "layout_json": ("STRING", {"multiline": True}),
                 "images": ("IMAGE",),
-                "canvas_mode": (["fixed_preset", "fixed_custom", "scale_to_input"],),
+                "canvas_mode": (["auto", "fixed_preset", "fixed_custom", "scale_to_input"],),
+                "aspect_ratio": (ASPECT_RATIOS,),
                 "fixed_preset_size": (["1080p", "2K", "4K"],),
                 "fixed_custom_megapixels": ("FLOAT", {"default": 2.0, "min": 0.1, "max": 64.0, "step": 0.1}),
-                "page_orientation": (["portrait", "landscape"],),
+                "page_orientation": (["auto", "portrait", "landscape"],),
                 "scale_to_input_mode": (["largest", "smallest"],),
                 "fit_mode": (["cover", "contain", "stretch"],),
                 "scale_algo": (["nearest", "bilinear", "bicubic", "lanczos"], {"default": "lanczos"}),
@@ -46,6 +54,7 @@ class PanelCompositor:
         layout_json,
         images,
         canvas_mode,
+        aspect_ratio,
         fixed_preset_size,
         fixed_custom_megapixels,
         page_orientation,
@@ -59,6 +68,7 @@ class PanelCompositor:
         # a list (one tensor per panel), the rest are single scalar widgets.
         layout_json = layout_json[0]
         canvas_mode = canvas_mode[0]
+        aspect_ratio = aspect_ratio[0]
         fixed_preset_size = fixed_preset_size[0]
         fixed_custom_megapixels = fixed_custom_megapixels[0]
         page_orientation = page_orientation[0]
@@ -68,13 +78,21 @@ class PanelCompositor:
         gutter_px = gutter_px[0]
         gutter_color = gutter_color[0]
 
-        panels = self._parse_layout(layout_json)
+        panels, layout_page_orientation, layout_canvas_w, layout_canvas_h = self._parse_layout(layout_json)
 
-        if len(images) != len(panels):
-            raise ValueError(
-                f"Panel Compositor: expected {len(panels)} images (one per panel) "
-                f"but received {len(images)}."
-            )
+        # "auto" (the default) follows whatever orientation Panel Layout
+        # Provider designed the layout for, read straight from layout_json —
+        # explicit portrait/landscape here overrides that on purpose.
+        if page_orientation == "auto":
+            page_orientation = layout_page_orientation
+
+        # More images than panels: drop the extras (matched by position, so
+        # it's whatever's left over at the tail that gets dropped). Fewer
+        # images than panels is also allowed: panels beyond the supplied
+        # images render as the same numbered placeholder swatch shown live
+        # in Panel Layout Provider, so a partial render still shows the
+        # whole page.
+        images = images[: len(panels)]
 
         pil_images = []
         for idx, img_tensor in enumerate(images):
@@ -83,27 +101,39 @@ class PanelCompositor:
                 raise ValueError(f"Panel Compositor: image at index {idx} has zero width/height.")
             pil_images.append(pil_img)
 
+        if canvas_mode == "scale_to_input" and not pil_images:
+            raise ValueError(
+                "Panel Compositor: canvas_mode 'scale_to_input' needs at least one real image "
+                "to size the canvas from, but none were supplied."
+            )
+
         gutter_rgb = ImageColor.getrgb(gutter_color)
 
         canvas_w, canvas_h = self._compute_canvas_size(
             panels,
             pil_images,
             canvas_mode,
+            aspect_ratio,
             fixed_preset_size,
             fixed_custom_megapixels,
             page_orientation,
             scale_to_input_mode,
+            layout_canvas_w,
+            layout_canvas_h,
         )
 
         canvas = Image.new("RGB", (canvas_w, canvas_h), gutter_rgb)
 
-        for panel, pil_img in zip(panels, pil_images):
+        for i, panel in enumerate(panels):
             min_x, min_y, max_x, max_y = bbox_from_polygon(panel["polygon"])
             bbox_x0, bbox_y0 = round(min_x * canvas_w), round(min_y * canvas_h)
             bbox_x1, bbox_y1 = round(max_x * canvas_w), round(max_y * canvas_h)
             bbox_w, bbox_h = max(1, bbox_x1 - bbox_x0), max(1, bbox_y1 - bbox_y0)
 
-            fitted = fit_image(pil_img, bbox_w, bbox_h, fit_mode, scale_algo, gutter_rgb)
+            if i < len(pil_images):
+                fitted = fit_image(pil_images[i], bbox_w, bbox_h, fit_mode, scale_algo, gutter_rgb)
+            else:
+                fitted = render_placeholder(bbox_w, bbox_h, panel["order"], len(panels))
 
             layer = Image.new("RGB", (canvas_w, canvas_h), gutter_rgb)
             layer.paste(fitted, (bbox_x0, bbox_y0))
@@ -130,25 +160,46 @@ class PanelCompositor:
                     f"Panel Compositor: panel at position {i} is missing 'polygon' or 'order'."
                 )
 
-        return sorted(panels, key=lambda p: p["order"])
+        # Older layout_json without these fields (or hand-written JSON) just
+        # falls back to portrait / no canvas size, rather than erroring here —
+        # canvas_mode 'auto' is what actually enforces canvas_width/height
+        # being present, since that's the only mode that needs them.
+        page_orientation = data.get("page_orientation", "portrait")
+        canvas_width = data.get("canvas_width")
+        canvas_height = data.get("canvas_height")
+
+        return sorted(panels, key=lambda p: p["order"]), page_orientation, canvas_width, canvas_height
 
     @staticmethod
     def _compute_canvas_size(
         panels,
         pil_images,
         canvas_mode,
+        aspect_ratio,
         fixed_preset_size,
         fixed_custom_megapixels,
         page_orientation,
         scale_to_input_mode,
+        layout_canvas_w,
+        layout_canvas_h,
     ):
+        if canvas_mode == "auto":
+            if layout_canvas_w is None or layout_canvas_h is None:
+                raise ValueError(
+                    "Panel Compositor: canvas_mode 'auto' needs canvas_width/canvas_height "
+                    "from layout_json, but this layout_json doesn't have them (e.g. from an "
+                    "older Panel Layout Provider). Pick 'fixed_preset', 'fixed_custom', or "
+                    "'scale_to_input' instead, or reconnect a current Panel Layout Provider."
+                )
+            return layout_canvas_w, layout_canvas_h
+
         if canvas_mode == "fixed_preset":
-            ar = page_aspect_ratio(page_orientation)
+            ar = resolve_oriented_aspect_ratio(ASPECT_RATIO_CHOICES[aspect_ratio], page_orientation)
             mp = FIXED_PRESET_MEGAPIXELS[fixed_preset_size]
             return solve_dimensions_from_megapixels(ar, mp)
 
         if canvas_mode == "fixed_custom":
-            ar = page_aspect_ratio(page_orientation)
+            ar = resolve_oriented_aspect_ratio(ASPECT_RATIO_CHOICES[aspect_ratio], page_orientation)
             return solve_dimensions_from_megapixels(ar, fixed_custom_megapixels)
 
         if canvas_mode == "scale_to_input":

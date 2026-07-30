@@ -1,16 +1,33 @@
 import json
 
-from ..presets.layouts import LAYOUT_NAMES, get_layout
-from ..utils.geometry import bbox_from_polygon, parse_aspect_ratio, solve_dimensions_from_megapixels
+from ..presets.layouts import (
+    LAYOUT_NAMES,
+    apply_reading_order,
+    apply_rotation,
+    get_layout,
+)
+from ..utils.geometry import (
+    ASPECT_RATIO_CHOICES,
+    FIXED_PRESET_MEGAPIXELS,
+    compute_panel_dimensions,
+    parse_aspect_ratio,
+    resolve_oriented_aspect_ratio,
+    solve_dimensions_from_megapixels,
+)
 
-ASPECT_RATIOS = ["2:3", "1:1", "3:4", "16:9"]
+ASPECT_RATIOS = list(ASPECT_RATIO_CHOICES.keys())
+FIXED_PRESET_SIZES = list(FIXED_PRESET_MEGAPIXELS.keys())
 
 
 class PanelLayoutProvider:
     """Phase 1: outputs panel geometry from a fixed preset. Never touches pixels.
-    The page layout is shown directly on the node — drawn client-side, live,
-    with no execution needed — see web/panel_layout_preview.js, which mirrors
-    the preset polygons from presets/layouts.py."""
+    Also decides the actual page canvas size/shape (orientation + aspect_ratio
+    + resolution) — Panel Compositor's 'auto' canvas_mode reads it straight
+    from layout_json instead of deciding independently, so the two nodes
+    can't quietly disagree on page shape. The page layout is shown directly
+    on the node — drawn client-side, live, with no execution needed — see
+    web/panel_layout_preview.js, which mirrors the preset polygons from
+    presets/layouts.py and this same orientation math."""
 
     CATEGORY = "Manga/Layout"
     FUNCTION = "get_layout"
@@ -22,26 +39,62 @@ class PanelLayoutProvider:
         return {
             "required": {
                 "layout_preset": (LAYOUT_NAMES,),
+                "reading_order": (["left_to_right", "right_to_left"],),
+                "canvas_rotation": (["0", "90", "180", "270"],),
                 "aspect_ratio": (ASPECT_RATIOS,),
+                "page_orientation": (["portrait", "landscape"],),
+                "canvas_size_mode": (["fixed_preset", "fixed_custom"],),
+                "fixed_preset_size": (FIXED_PRESET_SIZES,),
+                "fixed_custom_megapixels": ("FLOAT", {"default": 2.0, "min": 0.1, "max": 64.0, "step": 0.1}),
                 "megapixels": ("FLOAT", {"default": 1.0, "min": 0.01, "max": 16.0, "step": 0.01}),
                 "multiple": ("INT", {"default": 64, "min": 1, "max": 256, "step": 1}),
             }
         }
 
-    def get_layout(self, layout_preset, aspect_ratio, megapixels, multiple):
+    def get_layout(
+        self,
+        layout_preset,
+        reading_order,
+        canvas_rotation,
+        aspect_ratio,
+        page_orientation,
+        canvas_size_mode,
+        fixed_preset_size,
+        fixed_custom_megapixels,
+        megapixels,
+        multiple,
+    ):
+        # Rotation only rotates the panel polygons — it does not touch the
+        # page's own shape. aspect_ratio/page_orientation alone decide the
+        # canvas; a rotated layout is fit onto that same, unchanged canvas.
         panels = get_layout(layout_preset)
-        page_ar = parse_aspect_ratio(aspect_ratio)
+        panels = apply_rotation(panels, canvas_rotation)
+        # Reading order is computed from the panels' CURRENT (rotated)
+        # polygons, so "which panel is read first" adapts to how rotation
+        # actually repositioned them, rather than assuming rotation="0".
+        panels = apply_reading_order(panels, reading_order, layout_preset)
 
-        panel_dimensions = []
-        for panel in panels:
-            min_x, min_y, max_x, max_y = bbox_from_polygon(panel["polygon"])
-            bbox_w, bbox_h = max_x - min_x, max_y - min_y
-            panel_ar = page_ar * (bbox_w / bbox_h)
-            panel_dimensions.append(
-                solve_dimensions_from_megapixels(panel_ar, megapixels, multiple)
-            )
+        # aspect_ratio picks the ratio's magnitude (e.g. '16:9' -> 1.778);
+        # page_orientation decides which way it points. This is the single
+        # source of truth for the page's shape — used for both the per-panel
+        # dimension suggestions below and the real canvas size.
+        page_ar = resolve_oriented_aspect_ratio(parse_aspect_ratio(aspect_ratio), page_orientation)
 
-        layout_json = json.dumps({"panels": panels})
+        panel_dimensions = compute_panel_dimensions(panels, page_ar, megapixels, multiple)
+
+        canvas_megapixels = (
+            FIXED_PRESET_MEGAPIXELS[fixed_preset_size]
+            if canvas_size_mode == "fixed_preset"
+            else fixed_custom_megapixels
+        )
+        canvas_width, canvas_height = solve_dimensions_from_megapixels(page_ar, canvas_megapixels, multiple)
+
+        layout_json = json.dumps({
+            "panels": panels,
+            "page_orientation": page_orientation,
+            "canvas_width": canvas_width,
+            "canvas_height": canvas_height,
+        })
         return (layout_json, panel_dimensions)
 
 
