@@ -9,32 +9,85 @@ instead of hand-maintaining its own copy, which is what it used to do
 before this and was a standing "keep these two files in sync by hand" risk.
 This module just loads that file once and keeps the rotation/reading-order
 math + the small runtime API the rest of the pack imports.
+
+Phase 2 (PHASE2_SPEC.md §7): user-drawn presets saved from the "Draw
+Panels" dialog live in a second file, web/layouts_user.json, same schema,
+merged in after the built-ins so LAYOUT_CHOICES lists built-ins first. That
+file ships absent/empty so a node-pack update (which overwrites
+web/layouts.json wholesale) can never delete a user's saved layouts.
 """
 
 import json
 import os
+import re
+import threading
+import uuid
 
 from ..utils.geometry import polygon_centroid
 
-_LAYOUTS_JSON_PATH = os.path.join(os.path.dirname(__file__), "..", "web", "layouts.json")
+_WEB_DIR = os.path.join(os.path.dirname(__file__), "..", "web")
+_LAYOUTS_JSON_PATH = os.path.join(_WEB_DIR, "layouts.json")
+_USER_LAYOUTS_JSON_PATH = os.path.join(_WEB_DIR, "layouts_user.json")
+
+# Guards the read-modify-write sequence in save_user_layout — the atomic
+# os.replace() alone prevents a corrupted file, but not a lost update if two
+# saves land close together (PHASE2_SPEC.md §9b).
+_save_lock = threading.Lock()
 
 with open(_LAYOUTS_JSON_PATH, encoding="utf-8") as _f:
-    _PRESETS = json.load(_f)
+    _BUILTIN_PRESETS = json.load(_f)
 
-LAYOUT_NAMES = list(_PRESETS.keys())
 
-# A flat dropdown of 11+ raw preset keys gets unwieldy, and ComfyUI's combo
-# widget has no native grouping — so the dropdown shown to the user is
-# "Category / Label" strings (grouped by construction: same-category entries
-# share a prefix and sit together in list order) instead of raw keys, with
-# LAYOUT_CHOICE_TO_NAME mapping the selected choice back to the real preset
-# key. `category`/`label` live in layouts.json right alongside each preset's
-# geometry, rather than a separate lookup table, so a new preset can't add
-# geometry but forget to also make itself selectable.
-LAYOUT_CHOICES = [f"{data['category']} / {data['label']}" for data in _PRESETS.values()]
-LAYOUT_CHOICE_TO_NAME = {
-    f"{data['category']} / {data['label']}": name for name, data in _PRESETS.items()
-}
+def _load_user_presets():
+    if not os.path.exists(_USER_LAYOUTS_JSON_PATH):
+        return {}
+    try:
+        with open(_USER_LAYOUTS_JSON_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as err:
+        # save_user_layout() itself writes atomically (§9b — temp file +
+        # os.replace), but this file can still end up corrupted by
+        # something outside that path entirely (a manual edit gone wrong,
+        # a stray editor autosave, disk corruption). The whole point of
+        # keeping user presets in a SEPARATE file from the built-in
+        # layouts.json is that a problem with one doesn't take down the
+        # other — a hard crash here would defeat that: it currently
+        # breaks every node in the pack, not just the user presets,
+        # since this runs unconditionally at import time. Degrade
+        # instead: log it and fall back to "no user presets," the same
+        # as a missing file, so built-ins keep working regardless.
+        print(f"[ComfyUI-Manga] WARNING: {_USER_LAYOUTS_JSON_PATH} is corrupted ({err}) — "
+              f"ignoring it, built-in presets are unaffected. Fix or delete the file to restore your saved presets.")
+        return {}
+
+
+def _rebuild():
+    """Recomputes every module-level derived table from the current
+    built-in + on-disk user preset data. Called once at import and again
+    after every successful save_user_layout(), so a newly-saved preset is
+    immediately selectable/runnable in the same server process — no
+    restart needed."""
+    global _PRESETS, LAYOUT_NAMES, LAYOUT_CHOICES, LAYOUT_CHOICE_TO_NAME, READING_GROUPS
+    _PRESETS = {**_BUILTIN_PRESETS, **_load_user_presets()}
+    LAYOUT_NAMES = list(_PRESETS.keys())
+    # A flat dropdown of built-in + user preset keys gets unwieldy, and
+    # ComfyUI's combo widget has no native grouping — so the dropdown shown
+    # to the user is "Category / Label" strings (grouped by construction:
+    # same-category entries share a prefix and sit together in list order)
+    # instead of raw keys, with LAYOUT_CHOICE_TO_NAME mapping the selected
+    # choice back to the real preset key.
+    LAYOUT_CHOICES = [f"{data['category']} / {data['label']}" for data in _PRESETS.values()]
+    LAYOUT_CHOICE_TO_NAME = {
+        f"{data['category']} / {data['label']}": name for name, data in _PRESETS.items()
+    }
+    # A user-saved preset may have no reading_groups at all (see
+    # save_user_layout's docstring) — apply_reading_order already treats a
+    # missing/None entry as "use literal panel-array order," so .get()
+    # rather than [] is the right lookup here.
+    READING_GROUPS = {name: data.get("reading_groups") for name, data in _PRESETS.items()}
+
+
+_rebuild()
 
 
 def get_layout(preset_name):
@@ -43,19 +96,6 @@ def get_layout(preset_name):
         {"id": i, "order": i, "polygon": [list(point) for point in polygon]}
         for i, polygon in enumerate(polygons)
     ]
-
-
-# Structural grouping of each preset's panels, for reading-order purposes —
-# a rotation-invariant fact about which panels were originally peers in a
-# row/column, authored once per preset rather than auto-detected from bboxes
-# (bbox-based row detection breaks on asymmetric presets, e.g.
-# three_wedge_top_split's middle panel has a taller bbox than its neighbors).
-# Nested lists = nested structure (e.g. four_grid is "2 rows, 2 panels
-# each"); a bare id = a panel with no peers at its level. The actual ORDER
-# is computed from this structure combined with each panel's *rotated*
-# centroid (see apply_reading_order below), so it stays correct under
-# rotation instead of being a fixed table that only works at rotation "0".
-READING_GROUPS = {name: data["reading_groups"] for name, data in _PRESETS.items()}
 
 
 def _group_centroid(group, centroids):
@@ -100,7 +140,20 @@ def apply_reading_order(panels, reading_order, preset_name):
     identity for the panel regardless of reading order or rotation) based
     on the panels' CURRENT polygons — call this after apply_rotation, not
     before, so the order reflects the final rotated layout. Returns the
-    panels sorted by the new order."""
+    panels sorted by the new order.
+
+    `group is None` (no reading_groups at all) falls back to literal
+    panel-array order (`p["order"]`, which apply_rotation never touches) —
+    this is deliberately how a user-drawn preset saved with a *manual*
+    reading-order override is represented (see save_user_layout): there is
+    no way to encode an arbitrary literal order through the centroid-sort
+    structure below (nested groups always re-sort by geometry, regardless
+    of array position — that's the whole point, so built-in presets stay
+    correct under rotation), so a manual override instead omits
+    reading_groups entirely and bakes the order directly into the saved
+    panels array's position. The trade-off: an explicitly manual-ordered
+    preset doesn't adapt to canvas_rotation the way an auto-derived one
+    does — an accepted cost for honoring the user's explicit choice."""
     group = READING_GROUPS.get(preset_name)
     if group is None:
         return sorted(panels, key=lambda p: p["order"])
@@ -132,3 +185,113 @@ def apply_rotation(panels, rotation):
         {**p, "polygon": [transform(x, y) for x, y in p["polygon"]]}
         for p in panels
     ]
+
+
+def _slugify(label):
+    slug = re.sub(r"[^a-z0-9]+", "_", label.strip().lower()).strip("_")
+    return slug or "layout"
+
+
+def _dump_user_layouts(data):
+    """Compact one-line-per-array formatting matching web/layouts.json's
+    hand-authored style (see TODO.md's "ballooned to ~4,000 lines" note) —
+    each polygon and the reading_groups value stays on one line instead of
+    plain json.dump's default one-array-element-per-line explosion, so
+    layouts_user.json stays as browsable/hand-editable as its built-in
+    counterpart."""
+    keys = list(data.keys())
+    lines = ["{"]
+    for ki, key in enumerate(keys):
+        entry = data[key]
+        trailing = "," if ki < len(keys) - 1 else ""
+        lines.append(f"  {json.dumps(key)}: {{")
+        lines.append(f'    "category": {json.dumps(entry["category"])},')
+        lines.append(f'    "label": {json.dumps(entry["label"])},')
+        lines.append('    "panels": [')
+        panel_lines = [f"      {json.dumps(polygon)}" for polygon in entry["panels"]]
+        lines.append(",\n".join(panel_lines))
+        has_reading_groups = entry.get("reading_groups") is not None
+        lines.append("    ]" + ("," if has_reading_groups else ""))
+        if has_reading_groups:
+            lines.append(f'    "reading_groups": {json.dumps(entry["reading_groups"])}')
+        lines.append("  }" + trailing)
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def save_user_layout(category, label, panels, reading_groups):
+    """Persists a new user-drawn preset to web/layouts_user.json — always a
+    new entry (PHASE2_SPEC.md §3c: save never overwrites an existing one).
+    `panels` is a list of polygons (list of [x, y] points) — the caller
+    (the /manga/save_user_layout route) is responsible for winding
+    normalization and validation already having happened client-side;
+    this function does its own minimal shape checks as the actual
+    disk-write boundary, not a re-run of the full validator.
+    `reading_groups` may be None (see apply_reading_order's docstring for
+    why a manual reading-order override is represented that way).
+
+    Writes atomically (temp file in the same directory + os.replace, per
+    §9b) under a lock guarding the whole read-modify-write sequence, so two
+    near-simultaneous saves can't lose one's update to the other. Returns
+    (key, choice) — the new preset's generated snake_case key and its
+    "Category / Label" dropdown choice string.
+    """
+    if not isinstance(category, str) or not category.strip():
+        raise ValueError("category must be a non-empty string")
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError("label must be a non-empty string")
+    if not isinstance(panels, list) or len(panels) == 0:
+        raise ValueError("panels must be a non-empty list")
+    for polygon in panels:
+        if not isinstance(polygon, list) or len(polygon) < 3:
+            raise ValueError("every panel needs at least 3 points")
+
+    category = category.strip()
+    label = label.strip()
+    key_base = _slugify(label)
+
+    with _save_lock:
+        existing = _load_user_presets()
+
+        # The picker groups presets by exact-match `category` string (see
+        # LAYOUT_CHOICES/the `<optgroup>`-equivalent grouping) — a category
+        # typed with different capitalization than an existing one (e.g.
+        # "Three Pannels" vs "Three pannels") would otherwise silently
+        # create a second, visually-near-identical group instead of joining
+        # the existing one, which is what a user typing free text expects.
+        # Reuse an existing category's exact casing on a case-insensitive
+        # match, checking both built-ins and other user presets, so the
+        # FIRST-ever spelling used for a category wins going forward.
+        for other in {**_BUILTIN_PRESETS, **existing}.values():
+            if other["category"].lower() == category.lower():
+                category = other["category"]
+                break
+
+        key = key_base
+        suffix = 2
+        while key in _BUILTIN_PRESETS or key in existing:
+            key = f"{key_base}_{suffix}"
+            suffix += 1
+
+        entry = {"category": category, "label": label, "panels": panels}
+        if reading_groups is not None:
+            entry["reading_groups"] = reading_groups
+        existing[key] = entry
+
+        tmp_path = f"{_USER_LAYOUTS_JSON_PATH}.tmp-{uuid.uuid4().hex}"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(_dump_user_layouts(existing))
+            os.replace(tmp_path, _USER_LAYOUTS_JSON_PATH)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+        # Sanity check: re-read + re-parse what was just written before
+        # reporting success, per §9b step 5.
+        with open(_USER_LAYOUTS_JSON_PATH, encoding="utf-8") as f:
+            json.load(f)
+
+        _rebuild()
+
+    return key, f"{category} / {label}"

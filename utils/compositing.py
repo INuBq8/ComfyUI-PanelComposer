@@ -263,6 +263,39 @@ def _find_perspective_coeffs(dest_pts, src_pts):
     return np.linalg.solve(np.array(a_rows), np.array(b_vals)).tolist()
 
 
+def _rotate_to_top_left_start(polygon_local):
+    """Rotates a 4-point polygon's array so it starts at whichever vertex is
+    geometrically top-left-most (min y, then min x) — the same convention
+    ADDING_PRESETS.md documents for hand-authored quads ("clockwise order
+    starting from the top-left-most corner") and JS's normalizeWinding
+    already enforces for drawn panels at draw/save time.
+
+    Needed here too — this used to be a documented ASSUMPTION rather than
+    something re-derived, on the claim that canvas_rotation is "orientation-
+    preserving" so the convention just carries through. That's true for
+    winding DIRECTION (a rotation is not a reflection, so clockwise stays
+    clockwise) but false for which array INDEX ends up first: apply_rotation
+    (presets/layouts.py) transforms each vertex's coordinates but has no
+    reason to also re-derive which one is now closest to top-left of the
+    panel's own (rotated) bounding box. A 180° rotation is the clearest
+    case — confirmed by direct test, e.g. single_full_page's
+    [[0,0],[1,0],[1,1],[0,1]] becomes [[1,1],[0,1],[0,0],[1,0]] at
+    canvas_rotation=180: array position 0 is now the panel's own
+    bottom-right, not top-left, so pairing it positionally with the source
+    image's top-left corner (as this function does below) silently rotated
+    every fit_to_shape panel's CONTENT by 180° while the panel's own
+    border/position looked correctly rotated — real bug, `stretch` was
+    unaffected since it never does per-vertex correspondence at all.
+    """
+    min_idx = 0
+    for i in range(1, len(polygon_local)):
+        x, y = polygon_local[i]
+        mx, my = polygon_local[min_idx]
+        if y < my - 1e-6 or (abs(y - my) <= 1e-6 and x < mx):
+            min_idx = i
+    return polygon_local[min_idx:] + polygon_local[:min_idx]
+
+
 def _warp_quad(image, target_w, target_h, polygon_local, resample, pad_color):
     """True perspective (homography) warp for a 4-vertex panel: the source
     image's 4 actual corners map exactly onto the panel's 4 actual vertices
@@ -276,10 +309,11 @@ def _warp_quad(image, target_w, target_h, polygon_local, resample, pad_color):
     that missing bbox corner just never appears anywhere in the panel,
     which is what made `fit_to_shape` visually indistinguishable from
     `stretch` for two_diagonal_split and three_panel_cascade_diagonal.
-    Assumes `polygon_local` is wound consistently with (0,0)/(w,0)/(w,h)/
-    (0,h) — true for every quad preset (and preserved by rotation, which is
-    orientation-preserving).
+    Re-derives the top-left-most vertex itself (see
+    `_rotate_to_top_left_start`) rather than trusting `polygon_local`'s
+    array order — that order is NOT reliably preserved by canvas_rotation.
     """
+    polygon_local = _rotate_to_top_left_start(list(polygon_local))
     src_w, src_h = image.size
     src_corners = [(0, 0), (src_w, 0), (src_w, src_h), (0, src_h)]
     coeffs = _find_perspective_coeffs(polygon_local, src_corners)

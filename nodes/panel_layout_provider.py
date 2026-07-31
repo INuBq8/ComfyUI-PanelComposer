@@ -1,12 +1,7 @@
 import json
 
-from ..presets.layouts import (
-    LAYOUT_CHOICE_TO_NAME,
-    LAYOUT_CHOICES,
-    apply_reading_order,
-    apply_rotation,
-    get_layout,
-)
+from ..presets import layouts
+from ..presets.layouts import apply_reading_order, apply_rotation, get_layout
 from ..utils.compositing import pil_to_tensor
 from ..utils.geometry import (
     ASPECT_RATIO_CHOICES,
@@ -49,7 +44,13 @@ class PanelLayoutProvider:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "layout_preset": (LAYOUT_CHOICES,),
+                # Read fresh off the `layouts` module (not a name imported
+                # once at server-startup) so a preset saved through the
+                # Draw Panels dialog is selectable/runnable immediately —
+                # save_user_layout() rebinds layouts.LAYOUT_CHOICES to a
+                # new list object on every save rather than mutating it in
+                # place, so a stale direct-name import would never see it.
+                "layout_preset": (layouts.LAYOUT_CHOICES,),
                 "reading_order": (["left_to_right", "right_to_left"],),
                 "canvas_rotation": (["0", "90", "180", "270"],),
                 "aspect_ratio": (ASPECT_RATIOS,),
@@ -76,8 +77,10 @@ class PanelLayoutProvider:
         multiple,
     ):
         # The widget shows "Category / Label" (grouped dropdown); resolve it
-        # back to the actual preset key everything below expects.
-        layout_preset = LAYOUT_CHOICE_TO_NAME[layout_preset]
+        # back to the actual preset key everything below expects. Same
+        # staleness reasoning as INPUT_TYPES above — read live off the
+        # module, not a name captured at import time.
+        layout_preset = layouts.LAYOUT_CHOICE_TO_NAME[layout_preset]
 
         # Rotation only rotates the panel polygons — it does not touch the
         # page's own shape. aspect_ratio/page_orientation alone decide the

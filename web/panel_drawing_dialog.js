@@ -6,6 +6,7 @@ import {
     palette,
     polygonCentroid,
     orderedIds,
+    deriveRowGroups,
     loadPresets,
     panelsFromPreset,
     presetKeyFromChoice,
@@ -49,8 +50,22 @@ import {
 // paint in reading order, later on top), but overlapping panels get a
 // dashed amber warning (canvas + Panels list) distinct from the solid red
 // invalid state, since accidental overlap is a real mistake worth
-// surfacing even though it isn't technically broken. The save flow
-// (§7-§10) is still the last step.
+// surfacing even though it isn't technically broken. Step 7 done: the
+// save flow (§7/§8) — a category/label prompt shown once §4/§5's
+// repair+validation already pass, POSTing to the new
+// /manga/save_user_layout backend route (nodes/routes.py, backed by
+// presets/layouts.py's save_user_layout — see PHASE2_SPEC.md §9b for the
+// atomic-write requirement that function implements), then writing the
+// resulting preset straight back into the node's own picker via
+// node.mangaApplySavedLayout (a hook panel_layout_preview.js attaches per
+// node instance) so it's immediately selected without the user having to
+// find it in the dropdown. See the readingOrderManuallySet declaration
+// above for how a manual reading-order override is represented in the
+// saved data despite the reading_groups schema only being able to encode
+// geometry-derived structure, not an arbitrary literal order. Steps 8
+// (already folded into step 7's build, since the save route can't work
+// without presets/layouts.py's merge logic existing) and 9 (full
+// round-trip live test) remain.
 //
 // Built as a fully independent, self-owned DOM overlay (position: fixed,
 // full-viewport, appended to document.body) rather than any attempt to
@@ -122,6 +137,46 @@ function fitRect(boxW, boxH, aspectRatio) {
 
 function clamp01(v) {
     return Math.min(1, Math.max(0, v));
+}
+
+// ── NORMALIZE (user-requested cleanup button) ──────────────────────────────
+// Freehand-drawn/snapped coordinates routinely end up as ugly long
+// repeating decimals (e.g. 0.9990740740740741, 0.32592592592592595) — a
+// side effect of pixel-quantized normalized coordinates, especially after
+// resizing Canvas Shape mid-edit (a pixel position exact for one canvas
+// size becomes a repeating fraction of a different one). Two independent
+// cleanups, applied per-vertex:
+//   1. If a coordinate is within NORMALIZE_SNAP_TOLERANCE of 0, 0.5, or 1
+//      (by far the most common INTENDED positions — canvas edges/center),
+//      snap to that exact value. Covers exactly the reported cases:
+//      0.999... -> 1, 0.499...-> 0.5, 0.498...-> 0.5.
+//   2. Otherwise, round to NORMALIZE_ROUND_DECIMALS decimal places — cleans
+//      up trailing float noise (0.6000000000000001 -> 0.6) and shortens
+//      genuine non-round positions (0.32592592592592595 -> 0.3259) without
+//      forcing them onto an unrelated "nice" number.
+// Vertices already get clamped into [0,1] on every interactive path
+// (pixelToNorm) and again by autoRepairPanel at close/save time, so this
+// clamp is a belt-and-suspenders safety net here too, same reasoning as
+// autoRepairPanel's — not the primary way out-of-bounds points get fixed,
+// but this button is explicitly also supposed to fix any that slipped
+// through (e.g. from hand-editing layouts_user.json before loading it back
+// in), diagonally-out points landing on the nearest canvas corner as a
+// natural consequence of clamping each axis independently.
+const NORMALIZE_SNAP_TARGETS = [0, 0.5, 1];
+const NORMALIZE_SNAP_TOLERANCE = 0.006;
+const NORMALIZE_ROUND_DECIMALS = 4;
+
+function normalizeCoordinate(v) {
+    const clamped = clamp01(v);
+    for (const target of NORMALIZE_SNAP_TARGETS) {
+        if (Math.abs(clamped - target) <= NORMALIZE_SNAP_TOLERANCE) return target;
+    }
+    const factor = 10 ** NORMALIZE_ROUND_DECIMALS;
+    return Math.round(clamped * factor) / factor;
+}
+
+function normalizePanelPoints(points) {
+    return points.map(([x, y]) => [normalizeCoordinate(x), normalizeCoordinate(y)]);
 }
 
 // Standard ray-casting point-in-polygon test.
@@ -442,6 +497,23 @@ function openDrawingDialog(node) {
     // directly editable by the user via the Panels list's up/down
     // reordering (a "manual override" per PHASE2_SPEC.md §6).
     let readingOrderIds = [];
+    // True once the user has manually reordered away from the geometry-
+    // derived guess (moveReadingOrder), false again after any fresh
+    // auto-derivation (recomputeAutoReadingOrder, incl. the Auto Order
+    // button). Read only at save time (see buildSavePayload) — the
+    // reading_groups schema can only encode *structure*, not an arbitrary
+    // literal order (nested groups always re-sort by geometry regardless
+    // of array position, which is exactly what makes built-in presets
+    // rotation-correct), so there is no way to persist a genuine manual
+    // override through that mechanism. Instead: a manual save omits
+    // reading_groups entirely, which both apply_reading_order (Python) and
+    // applyReadingOrder (JS) already treat as "use literal panel-array
+    // order" — so panels are exported in readingOrderIds order and that
+    // order sticks, at the cost of no longer adapting to canvas_rotation.
+    // An auto-derived save instead exports flat reading_groups, which DOES
+    // re-derive from geometry every time (adapting correctly to rotation),
+    // matching PHASE2_SPEC.md §6's literal description of the default case.
+    let readingOrderManuallySet = false;
 
     // ── DOM SHELL ────────────────────────────────────────────────────────
     const overlay = document.createElement("div");
@@ -457,6 +529,7 @@ function openDrawingDialog(node) {
 
     const dialog = document.createElement("div");
     dialog.style.cssText = `
+        position: relative;
         width: 90vw;
         height: 88vh;
         max-width: 1400px;
@@ -495,9 +568,13 @@ function openDrawingDialog(node) {
     const selectBtn = makeToolbarButton("Select", "Select/move a panel or vertex");
     const deleteBtn = makeToolbarButton("Delete", "Delete the selected panel/vertex");
     const clearBtn = makeToolbarButton("Clear", "Clear all panels and start from an empty canvas");
+    const normalizeBtn = makeToolbarButton(
+        "Normalize",
+        "Clean up messy coordinates (e.g. 0.9990740740740741 -> 1) and pull any out-of-bounds vertex back onto the canvas"
+    );
     const undoBtn = makeToolbarButton("Undo", "Undo (Ctrl+Z)");
     const redoBtn = makeToolbarButton("Redo", "Redo (Ctrl+Y)");
-    for (const b of [newPanelBtn, selectBtn, deleteBtn, clearBtn, undoBtn, redoBtn]) toolbar.appendChild(b);
+    for (const b of [newPanelBtn, selectBtn, deleteBtn, clearBtn, normalizeBtn, undoBtn, redoBtn]) toolbar.appendChild(b);
 
     const spacer1 = document.createElement("div");
     spacer1.style.cssText = "width: 1px; align-self: stretch; background: " + COLOR_BORDER + "; margin: 0 4px;";
@@ -666,6 +743,219 @@ function openDrawingDialog(node) {
 
     body.appendChild(sidePanel);
     dialog.appendChild(body);
+
+    // ── SAVE PROMPT (§7/§8) ──────────────────────────────────────────────
+    // Shown over the dialog (not a separate full-viewport overlay — it's
+    // positioned relative to `dialog`, which got `position: relative`
+    // above specifically for this) once Save's own validation has already
+    // passed. Category defaults to "Custom" and can be left as-is, reused,
+    // or replaced with a new name (the picker groups by whatever string
+    // shows up here, no fixed list); Label has no default and is required.
+    const savePromptOverlay = document.createElement("div");
+    savePromptOverlay.style.cssText = `
+        position: absolute;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.55);
+        z-index: 20;
+    `;
+    const savePromptCard = document.createElement("div");
+    savePromptCard.style.cssText = `
+        width: 320px;
+        background: ${COLOR_PANEL_BG};
+        border: 1px solid ${COLOR_BORDER};
+        border-radius: 8px;
+        padding: 16px;
+        box-sizing: border-box;
+    `;
+    const savePromptTitle = document.createElement("div");
+    savePromptTitle.textContent = "Save as New Preset";
+    savePromptTitle.style.cssText = "font-size: 13px; font-weight: 600; margin-bottom: 6px;";
+    savePromptCard.appendChild(savePromptTitle);
+
+    const savePromptNote = document.createElement("div");
+    // §3c: every save creates a new entry — there's no "overwrite" option
+    // in this phase, and undoing a mistaken save means hand-editing
+    // layouts_user.json. Stated up front so it isn't a surprise.
+    savePromptNote.textContent = "Saves as a new preset — this can't be undone from here.";
+    savePromptNote.style.cssText = `font-size: 11px; color: ${COLOR_MUTED}; margin-bottom: 12px;`;
+    savePromptCard.appendChild(savePromptNote);
+
+    function makePromptField(labelText, defaultValue) {
+        const wrap = document.createElement("div");
+        wrap.style.cssText = "margin-bottom: 10px;";
+        const lbl = document.createElement("div");
+        lbl.textContent = labelText;
+        lbl.style.cssText = `font-size: 11px; color: ${COLOR_MUTED}; margin-bottom: 3px;`;
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = defaultValue;
+        input.style.cssText = `
+            width: 100%;
+            box-sizing: border-box;
+            background: #1b1b26;
+            color: ${COLOR_INK};
+            border: 1px solid ${COLOR_BORDER};
+            border-radius: 3px;
+            padding: 5px 6px;
+            font-size: 12px;
+            font-family: inherit;
+        `;
+        wrap.appendChild(lbl);
+        wrap.appendChild(input);
+        savePromptCard.appendChild(wrap);
+        return input;
+    }
+    const categoryInput = makePromptField("Category", "Custom");
+    const labelInput = makePromptField("Label", "");
+
+    // Inline ghost-completion for Category — the classic address-bar-style
+    // autocomplete: as the user types a prefix of an existing category
+    // (built-in or previously user-saved, from the same loadedPresets this
+    // dialog already fetched for Load Preset), the rest of that category's
+    // name is appended and shown SELECTED — real browsers render an active
+    // selection highlighted, which reads as the standard "grey suggested
+    // remainder" pattern. Typing on continues normally (overwrites the
+    // selection). This is purely a typing convenience — it never blocks a
+    // genuinely new category name, and save_user_layout's own
+    // case-insensitive category-matching (see presets/layouts.py) is what
+    // actually prevents near-duplicate categories, independent of whether
+    // a suggestion was accepted here.
+    //
+    // Real bug caught live: Backspace on a selection normally deletes the
+    // whole selection in one step, which sounds like enough on its own —
+    // but that deletion still fires an `input` event, and without the
+    // inputType check below this same handler would see the shortened
+    // value, find the SAME match again, and re-append the SAME suggestion
+    // immediately — so Backspace visibly did nothing (delete-then-instant-
+    // reinsert), making it look broken/stuck exactly as reported. Only
+    // suggest on insertions, never on any deletion.
+    categoryInput.addEventListener("input", (e) => {
+        if (e.inputType && e.inputType.startsWith("delete")) return;
+        const typed = categoryInput.value;
+        if (!typed || !loadedPresets) return;
+        // Only meaningful when the caret is at the very end — appending a
+        // completion elsewhere would insert text unrelated to where the
+        // user is actually editing.
+        if (categoryInput.selectionStart !== typed.length) return;
+        const categories = [...new Set(Object.values(loadedPresets).map((p) => p.category))];
+        const match = categories.find(
+            (c) => c.length > typed.length && c.toLowerCase().startsWith(typed.toLowerCase())
+        );
+        if (match) {
+            categoryInput.value = typed + match.slice(typed.length);
+            categoryInput.setSelectionRange?.(typed.length, categoryInput.value.length);
+        }
+    });
+
+    const savePromptStatus = document.createElement("div");
+    savePromptStatus.style.cssText = `font-size: 11px; color: ${COLOR_INVALID}; min-height: 14px; margin-bottom: 10px;`;
+    savePromptCard.appendChild(savePromptStatus);
+
+    const savePromptButtons = document.createElement("div");
+    savePromptButtons.style.cssText = "display: flex; justify-content: flex-end; gap: 6px;";
+    // Deliberately not labeled "Cancel" — the toolbar already has a Cancel
+    // button that discards the whole drawing; this one only backs out of
+    // the save prompt, so a distinct label avoids that ambiguity for real
+    // users, not just test lookups.
+    const savePromptCancelBtn = makeToolbarButton("Back", "Back to editing without saving");
+    const savePromptConfirmBtn = makeToolbarButton("Save Preset", "Persist this layout");
+    savePromptConfirmBtn.style.background = COLOR_ACCENT;
+    savePromptConfirmBtn.style.color = "#0a0a0a";
+    savePromptConfirmBtn.style.fontWeight = "600";
+    savePromptButtons.appendChild(savePromptCancelBtn);
+    savePromptButtons.appendChild(savePromptConfirmBtn);
+    savePromptCard.appendChild(savePromptButtons);
+
+    savePromptOverlay.appendChild(savePromptCard);
+    dialog.appendChild(savePromptOverlay);
+    // Don't let a click on the card bubble to the overlay's own backdrop —
+    // not wired to close on backdrop click below anyway (accidental loss
+    // of typed category/label would be worse than a no-op click), but this
+    // keeps that intentional and explicit rather than incidental.
+    savePromptCard.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+    // Tracked as a plain variable rather than read back off
+    // savePromptOverlay.style.display — the dialog otherwise never
+    // introspects its own inline styles, and this keeps state-checks
+    // (e.g. onKeyDown's Escape handling below) independent of DOM/CSSOM
+    // round-tripping quirks.
+    let savePromptOpen = false;
+    function openSavePrompt() {
+        categoryInput.value = "Custom";
+        labelInput.value = "";
+        savePromptStatus.textContent = "";
+        savePromptConfirmBtn.disabled = false;
+        savePromptOverlay.style.display = "flex";
+        savePromptOpen = true;
+        labelInput.focus?.();
+    }
+    function closeSavePrompt() {
+        savePromptOverlay.style.display = "none";
+        savePromptOpen = false;
+    }
+
+    // Builds the persistence payload from the CURRENT panel/reading-order
+    // state. Two different shapes depending on readingOrderManuallySet
+    // (see its declaration above for the full reasoning):
+    //  - Manual override: panels are reindexed to the user's chosen
+    //    readingOrderIds sequence and reading_groups is omitted, so
+    //    apply_reading_order's group=None fallback (literal panel-array
+    //    order) bakes that exact order in permanently.
+    //  - Auto (the default): panels stay in their original draw-order
+    //    indices — array position is otherwise meaningless once
+    //    reading_groups is present, since apply_reading_order/orderedIds
+    //    always re-derive order from geometry + group structure regardless
+    //    of array position — and reading_groups is deriveRowGroups' nested
+    //    row structure (not a flat list), so the SAME geometry-adapts-to-
+    //    rotation behavior a built-in preset gets "for free" applies here
+    //    too, without collapsing multi-row layouts into one global sort
+    //    (see deriveRowGroups' own comment for why that used to break).
+    function buildSavePayload(category, label) {
+        if (readingOrderManuallySet) {
+            const orderedPanels = readingOrderIds.map((i) => panelsState[i].points.map(([x, y]) => [x, y]));
+            return { category, label, panels: orderedPanels, reading_groups: null };
+        }
+        const panels = panelsState.map((p) => p.points.map(([x, y]) => [x, y]));
+        const indices = panelsState.map((_, i) => i);
+        const readingGroups = deriveRowGroups(indices, (i) => panelsState[i].points);
+        return { category, label, panels, reading_groups: readingGroups };
+    }
+
+    async function submitSavePrompt() {
+        const category = (categoryInput.value || "").trim() || "Custom";
+        const label = (labelInput.value || "").trim();
+        if (!label) {
+            savePromptStatus.textContent = "Label is required.";
+            return;
+        }
+        savePromptStatus.textContent = "Saving…";
+        savePromptConfirmBtn.disabled = true;
+        try {
+            const payload = buildSavePayload(category, label);
+            const res = await fetch("/manga/save_user_layout", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.error || `server returned ${res.status}`);
+            }
+            // §10: reflect the new preset as selected on the node
+            // immediately, without the user having to find it in the
+            // dropdown themselves.
+            node.mangaApplySavedLayout?.(data.choice);
+            close();
+        } catch (err) {
+            savePromptStatus.textContent = `Save failed: ${err.message}`;
+            savePromptConfirmBtn.disabled = false;
+        }
+    }
+    savePromptCancelBtn.addEventListener("click", closeSavePrompt);
+    savePromptConfirmBtn.addEventListener("click", submitSavePrompt);
 
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
@@ -869,16 +1159,21 @@ function openDrawingDialog(node) {
         return map;
     }
 
-    // Default, automatic derivation: flat group (no authored row/column
-    // structure — that only exists for hand-authored built-in presets) fed
+    // Default, automatic derivation: row structure derived from geometry
+    // (deriveRowGroups — no authored row/column structure exists for a
+    // drawn shape the way it does for hand-authored built-in presets) fed
     // through the exact same axis-spread sort every built-in preset's
     // reading order already uses, reusing panel_layout_preview.js's
-    // orderedIds/polygonCentroid rather than a second copy. Good enough for
-    // simple stacks and side-by-sides "for free"; a genuine 2D grid or any
-    // other layout the single global axis-sort guesses wrong is exactly
-    // what the manual up/down override below exists for.
+    // deriveRowGroups/orderedIds/polygonCentroid rather than a second copy.
+    // Nails ordinary stacks, side-by-sides, AND "one full row + a split row
+    // below" layouts "for free" — deriveRowGroups' own comment covers why a
+    // flat (ungrouped) fallback used to get that last case wrong. A
+    // genuinely unusual layout (e.g. a panel deliberately spanning what a
+    // human would call two rows) is exactly what the manual up/down
+    // override below exists to correct.
     function recomputeAutoReadingOrder() {
         const indices = closedPanelIndices();
+        readingOrderManuallySet = false;
         if (indices.length === 0) {
             readingOrderIds = [];
             return;
@@ -887,7 +1182,7 @@ function openDrawingDialog(node) {
         indices.forEach((i) => {
             centroids[i] = polygonCentroid(panelsState[i].points);
         });
-        const group = indices.map((i) => [i]);
+        const group = deriveRowGroups(indices, (i) => panelsState[i].points);
         readingOrderIds = orderedIds(group, centroids, readingOrderWidget?.value ?? "left_to_right");
     }
 
@@ -900,6 +1195,7 @@ function openDrawingDialog(node) {
         if (pos < 0 || newPos < 0 || newPos >= readingOrderIds.length) return;
         snapshotForUndo();
         [readingOrderIds[pos], readingOrderIds[newPos]] = [readingOrderIds[newPos], readingOrderIds[pos]];
+        readingOrderManuallySet = true;
         render();
     }
 
@@ -911,6 +1207,7 @@ function openDrawingDialog(node) {
         undoStack.push({
             panels: JSON.parse(JSON.stringify(panelsState)),
             readingOrderIds: readingOrderIds.slice(),
+            readingOrderManuallySet,
         });
         redoStack = [];
     }
@@ -923,10 +1220,12 @@ function openDrawingDialog(node) {
         redoStack.push({
             panels: JSON.parse(JSON.stringify(panelsState)),
             readingOrderIds: readingOrderIds.slice(),
+            readingOrderManuallySet,
         });
         const prev = undoStack.pop();
         panelsState = prev.panels;
         readingOrderIds = prev.readingOrderIds;
+        readingOrderManuallySet = prev.readingOrderManuallySet;
         selection = null;
         render();
     }
@@ -935,10 +1234,12 @@ function openDrawingDialog(node) {
         undoStack.push({
             panels: JSON.parse(JSON.stringify(panelsState)),
             readingOrderIds: readingOrderIds.slice(),
+            readingOrderManuallySet,
         });
         const next = redoStack.pop();
         panelsState = next.panels;
         readingOrderIds = next.readingOrderIds;
+        readingOrderManuallySet = next.readingOrderManuallySet;
         selection = null;
         render();
     }
@@ -1295,6 +1596,19 @@ function openDrawingDialog(node) {
         recomputeAutoReadingOrder();
         render();
     });
+    // Geometry-only cleanup (see normalizePanelPoints above) — like a
+    // whole-panel drag, this changes coordinates but not the panel SET, so
+    // it deliberately does NOT recompute reading order (which would
+    // discard a manual override for what's meant to be a cosmetic
+    // cleanup).
+    normalizeBtn.addEventListener("click", () => {
+        if (panelsState.length === 0) return; // nothing to normalize
+        snapshotForUndo();
+        panelsState.forEach((panel) => {
+            panel.points = normalizePanelPoints(panel.points);
+        });
+        render();
+    });
     undoBtn.addEventListener("click", undo);
     redoBtn.addEventListener("click", redo);
     // §6 manual trigger: discard any manual reordering and recompute
@@ -1438,11 +1752,14 @@ function openDrawingDialog(node) {
         window.removeEventListener("resize", onWindowResize);
         window.removeEventListener("pointerup", onPointerUp);
         document.removeEventListener("keydown", onKeyDown);
+        presetCombobox.destroy(); // its dropdown panel is portaled to document.body, not a descendant of overlay — doesn't get cleaned up by overlay.remove() below
         overlay.remove();
     }
     function onKeyDown(e) {
         if (e.key === "Escape") {
-            if (mode === "drawing") {
+            if (savePromptOpen) {
+                closeSavePrompt();
+            } else if (mode === "drawing") {
                 cancelDrawing();
             } else {
                 close();
@@ -1473,14 +1790,12 @@ function openDrawingDialog(node) {
     document.addEventListener("keydown", onKeyDown);
     overlay.addEventListener("pointerdown", () => close()); // click on backdrop
     cancelBtn.addEventListener("click", close);
-    // Persistence itself (category/label prompt, writing to
-    // layouts_user.json) is still later steps (PHASE2_SPEC.md §7-§10) — but
-    // §5's validation is mandatory and blocks here already: every panel
-    // gets a final auto-repair pass (out-of-bounds clamp + self-
-    // intersection fix attempt) and winding normalization first (§4,
-    // idempotent if already run at close time), THEN validated — a save
-    // that would still persist a broken shape after repair is refused
-    // rather than silently closing.
+    // §4/§5 run here unconditionally (every panel gets a final auto-repair
+    // pass — out-of-bounds clamp + self-intersection fix attempt — and
+    // winding normalization, idempotent if already run at close time, THEN
+    // validated) before the §7/§8 category/label prompt is even shown — a
+    // save that would still persist a broken shape after repair is refused
+    // rather than ever reaching the prompt.
     saveBtn.addEventListener("click", () => {
         if (mode === "drawing") {
             saveStatus.textContent = "Finish or cancel the panel you're drawing first.";
@@ -1504,9 +1819,7 @@ function openDrawingDialog(node) {
             saveStatus.textContent = "Draw at least one panel before saving.";
             return;
         }
-        // Actual persistence (category/label prompt + backend write) is
-        // still a later step — closes for now once everything validates.
-        close();
+        openSavePrompt();
     });
 }
 

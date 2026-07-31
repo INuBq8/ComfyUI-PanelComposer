@@ -1,12 +1,16 @@
 import { app } from "../../scripts/app.js";
 
-// Preset data (panel polygons + reading-order groupings) lives in
-// layouts.json, right next to this file — presets/layouts.py loads that
-// same file from disk, so this fetch is what keeps the two in sync instead
-// of hand-maintaining a duplicate copy here (which is what this file used
-// to do, and was a standing "forgot to update the JS mirror" risk). Fetched
-// once and cached; every node instance's redraw awaits the same promise.
-const LAYOUTS_URL = new URL("./layouts.json", import.meta.url);
+// Preset data (panel polygons + reading-order groupings) is fetched from a
+// backend route rather than layouts.json directly (Phase 2, PHASE2_SPEC.md
+// §10) — presets/layouts.py merges the built-in web/layouts.json with any
+// user-saved presets from web/layouts_user.json into one dict, and this
+// route (/manga/all_layouts) is that same merged dict, keeping "how the
+// two files combine" in exactly one place (Python) rather than duplicating
+// the merge here. Fetched once and cached; every node instance's redraw
+// awaits the same promise. invalidatePresetsCache() clears the cache after
+// a new preset is saved through the drawing dialog, so the next
+// loadPresets() call picks it up instead of serving stale data forever.
+const LAYOUTS_URL = "/manga/all_layouts";
 let presetsPromise = null;
 
 export function loadPresets() {
@@ -14,11 +18,15 @@ export function loadPresets() {
         presetsPromise = fetch(LAYOUTS_URL)
             .then((r) => r.json())
             .catch((err) => {
-                console.error("Manga.PanelLayoutPreview: failed to load layouts.json", err);
+                console.error("Manga.PanelLayoutPreview: failed to load layouts", err);
                 return {};
             });
     }
     return presetsPromise;
+}
+
+export function invalidatePresetsCache() {
+    presetsPromise = null;
 }
 
 export function panelsFromPreset(presets, presetName) {
@@ -101,6 +109,24 @@ export function flatPresetChoices(presets) {
 // current selection, discarding any uncommitted search text. Shared by
 // the node's own picker and the drawing dialog's Load Preset control —
 // exactly one implementation of this UI pattern, not two.
+// The floating dropdown panel used to be a `position: absolute` child of
+// `wrap`. That works fine as long as every ancestor between `wrap` and the
+// viewport allows overflow — but this combobox lives inside containers
+// that deliberately don't (the node's own preview box has `overflow:
+// hidden` for its rounded corners; the drawing dialog's side panel has
+// `overflow-y: auto` for its own scrolling), so the panel was getting
+// visually clipped, sometimes almost entirely — a real bug a user hit
+// ("the dropdown menu looks like stuck inside the node ... had to increase
+// the node size to see it"). Fixed by portaling the panel: it's appended
+// to `document.body` directly instead of `wrap`, positioned with
+// `position: fixed` computed from the input's own `getBoundingClientRect()`
+// each time it opens, so it always renders on top of everything regardless
+// of what clips its logical parent. Needs a z-index above the drawing
+// dialog's own full-viewport overlay (OVERLAY_Z_INDEX in
+// panel_drawing_dialog.js, 100000) since this same combobox is also used
+// for that dialog's Load Preset control.
+const COMBOBOX_PANEL_Z_INDEX = 1000000;
+
 export function createPresetCombobox({ initialValue, onSelect }) {
     const wrap = document.createElement("div");
     wrap.style.cssText = "position: relative;";
@@ -124,23 +150,34 @@ export function createPresetCombobox({ initialValue, onSelect }) {
 
     const panel = document.createElement("div");
     panel.style.cssText = `
-        position: absolute;
-        top: 100%;
-        left: 0;
-        right: 0;
+        position: fixed;
         max-height: 260px;
         overflow-y: auto;
         background: #1b1b26;
         border: 1px solid ${COLOR_BORDER};
         border-radius: 3px;
-        margin-top: 2px;
-        z-index: 10000;
+        z-index: ${COMBOBOX_PANEL_Z_INDEX};
         display: none;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
     `;
 
     wrap.appendChild(input);
-    wrap.appendChild(panel);
+    document.body.appendChild(panel);
+
+    function repositionPanel() {
+        const rect = input.getBoundingClientRect();
+        panel.style.left = `${rect.left}px`;
+        panel.style.top = `${rect.bottom + 2}px`;
+        panel.style.width = `${rect.width}px`;
+    }
+    // Keeps the panel glued under the input across a window resize (e.g.
+    // the browser window itself, not LiteGraph's own zoom/pan — the input
+    // moving under LiteGraph zoom/pan while the panel is open is a known,
+    // narrower gap than the clipping bug this fixes, and closes itself
+    // the moment the input blurs).
+    window.addEventListener("resize", () => {
+        if (panel.style.display !== "none") repositionPanel();
+    });
 
     let presets = {};
     let currentValue = initialValue || "";
@@ -208,6 +245,7 @@ export function createPresetCombobox({ initialValue, onSelect }) {
     }
 
     function openPanel() {
+        repositionPanel(); // compute fresh each open — the input may have moved since last time
         panel.style.display = "block";
         renderPanel(""); // always the full list on open, not filtered by the idle label text
         input.select?.();
@@ -254,6 +292,15 @@ export function createPresetCombobox({ initialValue, onSelect }) {
         getValue() {
             return currentValue;
         },
+        // The panel is now a document.body-level element (see the portal
+        // comment above), not a descendant of `wrap` — it no longer gets
+        // garbage-collected for free when whatever contains `wrap` (a node,
+        // a drawing dialog) is torn down. Callers that have a teardown
+        // hook (node.onRemoved, the dialog's close()) should call this so
+        // the panel doesn't linger in the DOM indefinitely.
+        destroy() {
+            panel.remove();
+        },
     };
 }
 
@@ -292,6 +339,99 @@ export function orderedIds(group, centroids, readingOrder) {
     const ordered = [];
     for (const i of indices) ordered.push(...orderedIds(group[i], centroids, readingOrder));
     return ordered;
+}
+
+// Derives a nested reading_groups structure from geometry alone — for
+// presets that have no hand-authored structure (drawn/saved layouts;
+// built-in presets always author their own instead and never call this).
+//
+// orderedIds/_ordered_ids (Python) makes exactly one X-vs-Y decision PER
+// GROUP LEVEL, comparing the spread of that level's own sub-centroids. Fed
+// a flat list of N singleton panels (the previous approach here), there is
+// only ONE level — the comparison runs ONCE across every panel in the
+// preset at once. That collapses "one full-width row + a split row below"
+// (a common manga layout, and exactly what built-in presets like
+// three_top_split need an AUTHORED `[[0, 1], [2]]` grouping to get right)
+// into a single global sort: whichever axis has more spread across ALL
+// panels wins, full stop — so if Y wins (as it should, for a stacked
+// layout), reading_order (left_to_right/right_to_left) is never even
+// consulted, since only the X branch reads it. Two panels in the same
+// row that happen to differ in Y by a floating-point sliver (e.g. two
+// trapezoids splitting a row on a diagonal — their area-weighted
+// centroids aren't required to land on the exact same Y even though both
+// span the same Y range) then get ordered by that meaningless sliver
+// instead of by their actual left/right position.
+//
+// The fix isn't to change orderedIds — nested groups already do the right
+// thing (a top-level 2-entry group of "row 0" vs "row 1" sorts by Y since
+// that's the top-level spread; recursing into row 1's own 2-panel group,
+// X spread now clearly dominates the same Y sliver, since the two panels'
+// X positions differ far more than that sliver, so it correctly sorts by
+// X and respects reading_order). What's missing for drawn presets is
+// deriving that row structure in the first place — this function does
+// that, then the result is fed into the existing, unchanged orderedIds.
+//
+// Rows are found by a single greedy sweep, sorted by each panel's bounding
+// box top edge (min Y): a panel joins the current row if its Y-range
+// overlaps the row's accumulated Y-range by MORE than a small tolerance,
+// else it starts a new row. Good enough for manga panel layouts (same
+// "good enough at this vertex/panel count" pragmatism as the
+// self-intersection sweep elsewhere in this project) — a panel spanning
+// two visually-distinct rows could over-merge them, but that's exactly
+// the kind of unusual layout the manual reading-order override already
+// exists to correct.
+//
+// The tolerance itself is deliberately NOT near-zero — confirmed as a real
+// bug against actual hand-drawn user data: two panels meant to share a row
+// had their top edge land at y=0.499 instead of an exact 0.5 (ordinary
+// mouse/snap imprecision while freehand-drawing), giving a ~0.0009 sliver
+// of genuine Y-overlap with the row above — enough to wrongly merge all
+// three panels into one row under a near-zero threshold, silently
+// re-breaking the exact bug this function exists to fix. A drawn preset's
+// coordinates are normalized [0,1] regardless of the canvas's actual pixel
+// size, so there's no single "N pixels" value to use directly, but this
+// dialog's canvas is typically several hundred CSS px — 0.004 corresponds
+// to roughly 2-3px at those sizes, comfortably covering ordinary drawing
+// imprecision (a user-suggested fix, "treat a 1-2px difference as
+// touching, not overlapping") while staying far below any genuine
+// same-row overlap, which in practice spans a meaningful fraction of a
+// row's own height, not a fraction of a percent of it.
+const ROW_OVERLAP_TOLERANCE_NORM = 0.004;
+
+function polygonYRange(points) {
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const [, y] of points) {
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+    return [minY, maxY];
+}
+
+export function deriveRowGroups(indices, polygonByIndex) {
+    if (indices.length === 0) return [];
+    const yRangeByIndex = new Map(indices.map((i) => [i, polygonYRange(polygonByIndex(i))]));
+    const sorted = [...indices].sort((a, b) => yRangeByIndex.get(a)[0] - yRangeByIndex.get(b)[0]);
+
+    const rows = [[sorted[0]]];
+    let [rowMinY, rowMaxY] = yRangeByIndex.get(sorted[0]);
+    for (let k = 1; k < sorted.length; k++) {
+        const i = sorted[k];
+        const [minY, maxY] = yRangeByIndex.get(i);
+        const overlap = Math.min(rowMaxY, maxY) - Math.max(rowMinY, minY);
+        if (overlap > ROW_OVERLAP_TOLERANCE_NORM) {
+            rows[rows.length - 1].push(i);
+            rowMinY = Math.min(rowMinY, minY);
+            rowMaxY = Math.max(rowMaxY, maxY);
+        } else {
+            rows.push([i]);
+            rowMinY = minY;
+            rowMaxY = maxY;
+        }
+    }
+    // Bare id for a solo row, matching the existing reading_groups
+    // convention (see ADDING_PRESETS.md's "bare integer = no peers here").
+    return rows.map((row) => (row.length === 1 ? row[0] : row));
 }
 
 function applyReadingOrder(panels, readingOrder, group) {
@@ -672,6 +812,33 @@ app.registerExtension({
             node.onResize = function (size) {
                 origOnResize?.call(this, size);
                 redraw();
+            };
+
+            // presetCombobox's dropdown panel is portaled to document.body
+            // (see createPresetCombobox's own comment) — clean it up when
+            // this node goes away, or it lingers in the DOM forever.
+            const origOnRemoved = node.onRemoved;
+            node.onRemoved = function () {
+                presetCombobox.destroy();
+                return origOnRemoved?.apply(this, arguments);
+            };
+
+            // Phase 2 hook (PHASE2_SPEC.md §10): the drawing dialog calls
+            // this after a successful save to web/layouts_user.json, so the
+            // node immediately reflects the newly-created preset as
+            // selected without the user having to find it in the dropdown
+            // themselves. Refetches the merged preset list (invalidating
+            // the cache first, since loadPresets() caches its promise —
+            // otherwise this node's own picker would keep serving the
+            // pre-save snapshot forever) before selecting, via the same
+            // commitPresetSelection path any other picker selection uses.
+            node.mangaApplySavedLayout = function (choiceValue) {
+                invalidatePresetsCache();
+                loadPresets().then((loaded) => {
+                    presets = loaded;
+                    presetCombobox.setPresets(presets);
+                    commitPresetSelection(choiceValue);
+                });
             };
 
             loadPresets().then((loaded) => {
