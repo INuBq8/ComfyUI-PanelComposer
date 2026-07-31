@@ -9,7 +9,7 @@ import { app } from "../../scripts/app.js";
 const LAYOUTS_URL = new URL("./layouts.json", import.meta.url);
 let presetsPromise = null;
 
-function loadPresets() {
+export function loadPresets() {
     if (!presetsPromise) {
         presetsPromise = fetch(LAYOUTS_URL)
             .then((r) => r.json())
@@ -21,7 +21,7 @@ function loadPresets() {
     return presetsPromise;
 }
 
-function panelsFromPreset(presets, presetName) {
+export function panelsFromPreset(presets, presetName) {
     const polygons = presets[presetName]?.panels ?? presets.single_full_page?.panels ?? [];
     return polygons.map((polygon, order) => ({ order, polygon }));
 }
@@ -34,7 +34,7 @@ function panelsFromPreset(presets, presetName) {
 // resolution here, from the same category/label fields in layouts.json, so
 // the preview draws the right preset regardless of which display string is
 // currently selected.
-function presetKeyFromChoice(presets, choiceValue) {
+export function presetKeyFromChoice(presets, choiceValue) {
     for (const [name, data] of Object.entries(presets)) {
         if (`${data.category} / ${data.label}` === choiceValue) return name;
     }
@@ -53,28 +53,211 @@ function presetKeyFromChoice(presets, choiceValue) {
 // DOM preview box (already a real DOM element we fully control) and just
 // writes its choice into layout_preset's `.value` + fires its `.callback`,
 // the same two calls any picker needs to make regardless of how it opens.
-function populateGroupedSelect(select, presets, currentValue) {
-    select.innerHTML = "";
+// Filters a presets object down to entries whose category or label
+// contains `query` (case-insensitive substring) — shared by the node's own
+// picker (below) and the freeform-drawing dialog's Load Preset control, so
+// "how presets get searched" has exactly one implementation. An empty/
+// whitespace-only query returns `presets` unchanged (no filtering).
+export function filterPresetsByQuery(presets, query) {
+    const q = query.trim().toLowerCase();
+    if (!q) return presets;
+    const out = {};
+    for (const [key, data] of Object.entries(presets)) {
+        if (data.category.toLowerCase().includes(q) || data.label.toLowerCase().includes(q)) out[key] = data;
+    }
+    return out;
+}
+
+function groupByCategory(presets) {
     const byCategory = new Map();
     for (const data of Object.values(presets)) {
         if (!byCategory.has(data.category)) byCategory.set(data.category, []);
         byCategory.get(data.category).push(data.label);
     }
-    for (const [category, labels] of byCategory) {
-        const group = document.createElement("optgroup");
-        group.label = category;
-        for (const label of labels) {
-            const opt = document.createElement("option");
-            opt.value = `${category} / ${label}`;
-            opt.textContent = label;
-            group.appendChild(opt);
-        }
-        select.appendChild(group);
-    }
-    select.value = currentValue;
+    return byCategory;
 }
 
-function groupCentroid(group, centroids) {
+// Every "Category / Label" choice string, in the same grouped order
+// createPresetCombobox's dropdown panel renders them — the single source
+// of order for anything that needs to walk the full preset list
+// sequentially (the node picker's prev/next step buttons).
+export function flatPresetChoices(presets) {
+    const out = [];
+    for (const [category, labels] of groupByCategory(presets)) {
+        for (const label of labels) out.push(`${category} / ${label}`);
+    }
+    return out;
+}
+
+// Searchable combobox — one control that IS both the search box and the
+// dropdown trigger. Replaces an earlier design (a separate search <input>
+// sitting above a plain <select>) that live-testing showed was a bad
+// two-step flow: type in the search box, then still have to separately
+// open the dropdown. A single text input shows the current selection when
+// idle; focusing or typing opens a floating grouped list (filtered live
+// via filterPresetsByQuery); clicking a row, or pressing Enter on the
+// highlighted one, commits the selection and closes the list; Escape or
+// clicking/tabbing away closes it and reverts the input's text to the
+// current selection, discarding any uncommitted search text. Shared by
+// the node's own picker and the drawing dialog's Load Preset control —
+// exactly one implementation of this UI pattern, not two.
+export function createPresetCombobox({ initialValue, onSelect }) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "position: relative;";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.style.cssText = `
+        width: 100%;
+        box-sizing: border-box;
+        background: #1b1b26;
+        color: #e6e6e6;
+        border: 1px solid ${COLOR_BORDER};
+        border-radius: 3px;
+        padding: 3px 4px;
+        font-size: 11px;
+        font-family: inherit;
+        cursor: text;
+    `;
+
+    const panel = document.createElement("div");
+    panel.style.cssText = `
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        max-height: 260px;
+        overflow-y: auto;
+        background: #1b1b26;
+        border: 1px solid ${COLOR_BORDER};
+        border-radius: 3px;
+        margin-top: 2px;
+        z-index: 10000;
+        display: none;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    `;
+
+    wrap.appendChild(input);
+    wrap.appendChild(panel);
+
+    let presets = {};
+    let currentValue = initialValue || "";
+    let highlightedIndex = -1;
+    let rows = []; // [{ value, el }]
+    input.value = currentValue;
+
+    function renderPanel(query) {
+        panel.innerHTML = "";
+        rows = [];
+        const byCategory = groupByCategory(filterPresetsByQuery(presets, query));
+        if (byCategory.size === 0) {
+            const empty = document.createElement("div");
+            empty.textContent = "No matching presets";
+            empty.style.cssText = "padding: 6px 8px; font-size: 11px; color: #6a6880;";
+            panel.appendChild(empty);
+            highlightedIndex = -1;
+            return;
+        }
+        for (const [category, labels] of byCategory) {
+            const header = document.createElement("div");
+            header.textContent = category;
+            header.style.cssText = `
+                padding: 4px 8px 2px;
+                font-size: 10px;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+                color: #6a6880;
+            `;
+            panel.appendChild(header);
+            for (const label of labels) {
+                const value = `${category} / ${label}`;
+                const row = document.createElement("div");
+                row.textContent = label;
+                row.dataset.value = value;
+                row.style.cssText = `
+                    padding: 4px 8px;
+                    font-size: 11px;
+                    cursor: pointer;
+                    color: #e6e6e6;
+                `;
+                const idx = rows.length;
+                row.addEventListener("mouseenter", () => setHighlight(idx));
+                // mousedown (not click) + preventDefault, so the browser
+                // never shifts focus away from the input in the first
+                // place — no race against the input's own blur handler.
+                row.addEventListener("mousedown", (e) => {
+                    e.preventDefault();
+                    commitSelection(value);
+                });
+                panel.appendChild(row);
+                rows.push({ value, el: row });
+            }
+        }
+        setHighlight(rows.length > 0 ? 0 : -1);
+    }
+
+    function setHighlight(i) {
+        if (highlightedIndex >= 0 && rows[highlightedIndex]) rows[highlightedIndex].el.style.background = "";
+        highlightedIndex = i;
+        if (highlightedIndex >= 0 && rows[highlightedIndex]) {
+            rows[highlightedIndex].el.style.background = COLOR_ACCENT;
+            rows[highlightedIndex].el.scrollIntoView?.({ block: "nearest" });
+        }
+    }
+
+    function openPanel() {
+        panel.style.display = "block";
+        renderPanel(""); // always the full list on open, not filtered by the idle label text
+        input.select?.();
+    }
+    function closePanel() {
+        panel.style.display = "none";
+        input.value = currentValue;
+    }
+    function commitSelection(value) {
+        currentValue = value;
+        input.value = value;
+        closePanel();
+        onSelect(value);
+    }
+
+    input.addEventListener("focus", openPanel);
+    input.addEventListener("input", () => renderPanel(input.value));
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowDown") {
+            e.preventDefault();
+            if (panel.style.display === "none") openPanel();
+            else setHighlight(Math.min(highlightedIndex + 1, rows.length - 1));
+        } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setHighlight(Math.max(highlightedIndex - 1, 0));
+        } else if (e.key === "Enter") {
+            e.preventDefault();
+            if (highlightedIndex >= 0 && rows[highlightedIndex]) commitSelection(rows[highlightedIndex].value);
+        } else if (e.key === "Escape") {
+            closePanel();
+        }
+    });
+    input.addEventListener("blur", closePanel);
+
+    return {
+        el: wrap,
+        setPresets(newPresets) {
+            presets = newPresets;
+        },
+        setValue(value) {
+            currentValue = value;
+            input.value = value;
+        },
+        getValue() {
+            return currentValue;
+        },
+    };
+}
+
+export function groupCentroid(group, centroids) {
     if (typeof group === "number") return centroids[group];
     const points = group.map((g) => groupCentroid(g, centroids));
     return [
@@ -86,7 +269,7 @@ function groupCentroid(group, centroids) {
 // Sorts at each nesting level by whichever axis (X or Y) has more spread —
 // Y (rows) is never reversed by reading order, X (left-right within a row)
 // reverses for right_to_left. Mirrors presets/layouts.py's _ordered_ids.
-function orderedIds(group, centroids, readingOrder) {
+export function orderedIds(group, centroids, readingOrder) {
     if (typeof group === "number") return [group];
 
     const subCentroids = group.map((g) => groupCentroid(g, centroids));
@@ -152,7 +335,9 @@ const COLOR_PAGE_BG = "#f5f5f5";
 const COLOR_INK = "#141414";
 
 // Mirrors utils/geometry.py's ASPECT_RATIO_CHOICES — keep in sync by hand.
-const ASPECT_RATIO_CHOICES = {
+// Exported so panel_drawing_dialog.js can size its canvas the same way,
+// instead of hand-mirroring this table a second time.
+export const ASPECT_RATIO_CHOICES = {
     "1:1 (Square)": 1.0,
     "9:7": 9 / 7,
     "4:3 (Standard)": 4 / 3,
@@ -165,19 +350,21 @@ const ASPECT_RATIO_CHOICES = {
     "12:5 (Cinemascope)": 12 / 5,
 };
 
-function parseAspectRatio(ratioChoice) {
+export function parseAspectRatio(ratioChoice) {
     return ASPECT_RATIO_CHOICES[ratioChoice] ?? 1.0;
 }
 
 // Mirrors utils/geometry.py's resolve_oriented_aspect_ratio: aspect_ratio
 // picks the ratio's magnitude, page_orientation decides which way it points.
-function resolveOrientedAspectRatio(ratioMagnitude, orientation) {
+export function resolveOrientedAspectRatio(ratioMagnitude, orientation) {
     const magnitude = Math.max(ratioMagnitude, 1 / ratioMagnitude);
     return orientation === "landscape" ? magnitude : 1 / magnitude;
 }
 
 // Area-weighted centroid, robust for concave polygons (e.g. the L-shape).
-function polygonCentroid(points) {
+// Exported so panel_drawing_dialog.js can reuse it for reading-order
+// derivation (§6) instead of a second copy.
+export function polygonCentroid(points) {
     let area = 0, cx = 0, cy = 0;
     const n = points.length;
     for (let i = 0; i < n; i++) {
@@ -216,7 +403,9 @@ function hsvToRgb(h, s, v) {
     return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
 }
 
-function palette(n) {
+// Exported so panel_drawing_dialog.js can color drawn-but-unsaved panels the
+// same way the preview colors finished ones, instead of a third copy.
+export function palette(n) {
     const colors = [];
     const count = Math.max(n, 1);
     for (let i = 0; i < count; i++) {
@@ -321,8 +510,9 @@ app.registerExtension({
                 flex-direction: column;
             `;
 
-            // ── LAYOUT PICKER (real <optgroup> nesting — see populateGroupedSelect
-            // above for why this isn't a LiteGraph widget) ────────────────────
+            // ── LAYOUT PICKER (searchable combobox — see createPresetCombobox
+            // above for why this isn't a plain <select>: the search box IS the
+            // dropdown trigger, not a separate control above it) ─────────────
             const pickerBar = document.createElement("div");
             pickerBar.style.cssText = `
                 flex: 0 0 auto;
@@ -332,6 +522,7 @@ app.registerExtension({
                 display: flex;
                 gap: 4px;
                 align-items: stretch;
+                position: relative;
             `;
 
             function makeStepButton(label, title) {
@@ -358,21 +549,26 @@ app.registerExtension({
             const prevButton = makeStepButton("◀", "Previous layout");
             const nextButton = makeStepButton("▶", "Next layout");
 
-            const presetSelect = document.createElement("select");
-            presetSelect.style.cssText = `
-                flex: 1 1 auto;
-                min-width: 0;
-                background: #1b1b26;
-                color: #e6e6e6;
-                border: 1px solid ${COLOR_BORDER};
-                border-radius: 3px;
-                padding: 3px 4px;
-                font-size: 11px;
-                font-family: inherit;
-                box-sizing: border-box;
-            `;
+            // Looks up the widget fresh each time rather than capturing it in
+            // a closure, since this is defined before loadPresets() resolves
+            // below (the combobox needs its onSelect callback wired up
+            // immediately, even though presets/the widget aren't ready yet).
+            function commitPresetSelection(value) {
+                presetCombobox.setValue(value);
+                const w = node.widgets.find((ww) => ww.name === "layout_preset");
+                if (!w) return;
+                w.value = value;
+                w.callback?.(value, app.canvas, node, null, null);
+                redraw();
+            }
+            const presetCombobox = createPresetCombobox({
+                initialValue: "",
+                onSelect: commitPresetSelection,
+            });
+            presetCombobox.el.style.cssText += "flex: 1 1 auto; min-width: 0;";
+
             pickerBar.appendChild(prevButton);
-            pickerBar.appendChild(presetSelect);
+            pickerBar.appendChild(presetCombobox.el);
             pickerBar.appendChild(nextButton);
             previewBox.appendChild(pickerBar);
 
@@ -483,30 +679,25 @@ app.registerExtension({
 
                 const presetWidget = node.widgets.find((w) => w.name === "layout_preset");
                 if (presetWidget) {
-                    populateGroupedSelect(presetSelect, presets, presetWidget.value);
+                    presetCombobox.setPresets(presets);
+                    presetCombobox.setValue(presetWidget.value);
 
-                    const applySelection = () => {
-                        presetWidget.value = presetSelect.value;
-                        presetWidget.callback?.(presetSelect.value, app.canvas, node, null, null);
-                        redraw();
-                    };
-                    presetSelect.addEventListener("change", applySelection);
-
-                    // Step through presetSelect.options in DOM order — a flat
-                    // walk across every <optgroup> in turn, same order as the
-                    // dropdown itself, wrapping at both ends. Programmatically
-                    // setting .selectedIndex doesn't fire "change" on its own,
-                    // so both buttons call applySelection directly afterward.
+                    // Step through the full ordered preset list (same order
+                    // the combobox's own dropdown panel groups by), wrapping
+                    // at both ends — independent of whatever the combobox's
+                    // search box currently shows, since a search filter only
+                    // affects the open dropdown, not this button-driven walk.
                     const step = (delta) => {
-                        const count = presetSelect.options.length;
-                        if (count === 0) return;
-                        presetSelect.selectedIndex = (presetSelect.selectedIndex + delta + count) % count;
-                        applySelection();
+                        const choices = flatPresetChoices(presets);
+                        if (choices.length === 0) return;
+                        const currentIdx = choices.indexOf(presetCombobox.getValue());
+                        const nextIdx = ((currentIdx < 0 ? 0 : currentIdx) + delta + choices.length) % choices.length;
+                        commitPresetSelection(choices[nextIdx]);
                     };
                     prevButton.addEventListener("click", () => step(-1));
                     nextButton.addEventListener("click", () => step(1));
 
-                    // The <select> above is now the real picker — collapse the
+                    // The combobox above is now the real picker — collapse the
                     // native flat-list widget so there's still exactly one
                     // visible control, not two. Its value keeps working exactly
                     // as before (still the actual serialized backend input);
