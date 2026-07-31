@@ -32,6 +32,8 @@ async def post_save_user_layout(request):
         body = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"success": False, "error": "invalid JSON body"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"success": False, "error": "request body must be a JSON object"}, status=400)
 
     try:
         key, choice = save_user_layout(
@@ -54,6 +56,8 @@ async def post_delete_user_layout(request):
         body = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"success": False, "error": "invalid JSON body"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"success": False, "error": "request body must be a JSON object"}, status=400)
 
     try:
         delete_user_layout(key=body.get("key"))

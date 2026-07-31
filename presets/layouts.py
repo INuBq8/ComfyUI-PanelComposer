@@ -18,6 +18,7 @@ web/layouts.json wholesale) can never delete a user's saved layouts.
 """
 
 import json
+import math
 import os
 import re
 import threading
@@ -61,6 +62,34 @@ def _load_user_presets():
         return {}
 
 
+def _validate_presets(raw_presets, source_label):
+    """Filters `raw_presets` down to entries with a usable 'category'/
+    'label'/'panels' shape, warning and skipping anything else instead of
+    letting it through. `_rebuild()` runs unconditionally at import — every
+    node in the pack depends on it succeeding — so one malformed entry
+    (e.g. from hand-editing, a documented-as-supported workflow, or any
+    future write path that doesn't go through save_user_layout's own
+    validation) must not be able to take down the whole node pack the way
+    a single bad entry already couldn't for whole-file JSON corruption
+    (see _load_user_presets)."""
+    valid = {}
+    for name, data in raw_presets.items():
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("category"), str)
+            and isinstance(data.get("label"), str)
+            and isinstance(data.get("panels"), list)
+        ):
+            valid[name] = data
+        else:
+            print(
+                f"[ComfyUI-Manga] WARNING: skipping malformed preset {name!r} in "
+                f"{source_label} (needs string 'category'/'label' and a list "
+                f"'panels') — fix or remove this entry to restore it."
+            )
+    return valid
+
+
 def _rebuild():
     """Recomputes every module-level derived table from the current
     built-in + on-disk user preset data. Called once at import and again
@@ -74,8 +103,14 @@ def _rebuild():
     # _dump_presets build their own entry dict from scratch rather than
     # round-tripping through _PRESETS).
     _PRESETS = {
-        **{name: {**data, "is_builtin": True} for name, data in _BUILTIN_PRESETS.items()},
-        **{name: {**data, "is_builtin": False} for name, data in _load_user_presets().items()},
+        **{
+            name: {**data, "is_builtin": True}
+            for name, data in _validate_presets(_BUILTIN_PRESETS, "web/layouts.json").items()
+        },
+        **{
+            name: {**data, "is_builtin": False}
+            for name, data in _validate_presets(_load_user_presets(), "web/layouts_user.json").items()
+        },
     }
     LAYOUT_NAMES = list(_PRESETS.keys())
     # A flat dropdown of built-in + user preset keys gets unwieldy, and
@@ -195,6 +230,34 @@ def apply_rotation(panels, rotation):
     ]
 
 
+_MAX_READING_GROUP_DEPTH = 50
+
+
+def _validate_reading_groups(group, num_panels, depth=0):
+    """Recursively checks `reading_groups` has the shape _group_centroid/
+    _ordered_ids actually expect: arbitrarily-nested lists bottoming out at
+    panel-id ints in range. Without this, a saved preset with a bad id
+    (e.g. out of range) only fails later, at node-execution time, with a
+    raw KeyError out of _group_centroid; a group nested deeper than any
+    real layout would ever need can blow Python's recursion limit — both
+    are just the disk-write boundary's job to reject up front, same as the
+    panels/points checks above."""
+    if depth > _MAX_READING_GROUP_DEPTH:
+        raise ValueError("reading_groups is nested too deeply")
+    if isinstance(group, bool) or not isinstance(group, (int, list)):
+        raise ValueError("reading_groups must be made of panel-id ints and lists of them")
+    if isinstance(group, int):
+        if not (0 <= group < num_panels):
+            raise ValueError(
+                f"reading_groups references panel id {group}, but only {num_panels} panels were supplied"
+            )
+        return
+    if len(group) == 0:
+        raise ValueError("reading_groups must not contain an empty group")
+    for sub in group:
+        _validate_reading_groups(sub, num_panels, depth + 1)
+
+
 def _slugify(label):
     slug = re.sub(r"[^a-z0-9]+", "_", label.strip().lower()).strip("_")
     return slug or "layout"
@@ -276,6 +339,15 @@ def save_user_layout(category, label, panels, reading_groups):
     for polygon in panels:
         if not isinstance(polygon, list) or len(polygon) < 3:
             raise ValueError("every panel needs at least 3 points")
+        for point in polygon:
+            if (
+                not isinstance(point, list)
+                or len(point) != 2
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in point)
+            ):
+                raise ValueError("every point must be an [x, y] pair of finite numbers")
+    if reading_groups is not None:
+        _validate_reading_groups(reading_groups, len(panels))
 
     category = category.strip()
     label = label.strip()

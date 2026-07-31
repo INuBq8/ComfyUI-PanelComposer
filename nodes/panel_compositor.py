@@ -1,4 +1,5 @@
 import json
+import math
 
 from PIL import Image, ImageColor
 
@@ -118,7 +119,10 @@ class PanelCompositor:
                 "to size the canvas from, but none were supplied."
             )
 
-        gutter_rgb = ImageColor.getrgb(gutter_color)
+        try:
+            gutter_rgb = ImageColor.getrgb(gutter_color)
+        except ValueError as e:
+            raise ValueError(f"Panel Compositor: gutter_color {gutter_color!r} is not a valid color: {e}")
 
         canvas_w, canvas_h = self._compute_canvas_size(
             panels,
@@ -166,15 +170,44 @@ class PanelCompositor:
         except json.JSONDecodeError as e:
             raise ValueError(f"Panel Compositor: layout_json failed to parse: {e}")
 
+        # layout_json is a free-text widget — it can come from a downstream
+        # node, be hand-typed, or be baked into a shared workflow file from
+        # anywhere, so nothing about its shape can be assumed past "valid
+        # JSON." A non-object top level (a bare number/string/list/null)
+        # would otherwise reach the "panels" not in data check below and
+        # raise a raw, unclear TypeError instead of this module's own
+        # consistent ValueError-with-context style.
+        if not isinstance(data, dict):
+            raise ValueError("Panel Compositor: layout_json must be a JSON object.")
         if "panels" not in data:
             raise ValueError("Panel Compositor: layout_json is missing required field 'panels'.")
 
         panels = data["panels"]
+        if not isinstance(panels, list) or not panels:
+            raise ValueError("Panel Compositor: layout_json's 'panels' must be a non-empty list.")
         for i, panel in enumerate(panels):
-            if "polygon" not in panel or "order" not in panel:
+            if not isinstance(panel, dict) or "polygon" not in panel or "order" not in panel:
                 raise ValueError(
                     f"Panel Compositor: panel at position {i} is missing 'polygon' or 'order'."
                 )
+            polygon = panel["polygon"]
+            if not isinstance(polygon, list) or len(polygon) < 3:
+                raise ValueError(
+                    f"Panel Compositor: panel at position {i}'s polygon needs at least 3 points."
+                )
+            for point in polygon:
+                if (
+                    not isinstance(point, (list, tuple))
+                    or len(point) != 2
+                    or not all(
+                        isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                        for v in point
+                    )
+                ):
+                    raise ValueError(
+                        f"Panel Compositor: panel at position {i} has a malformed point "
+                        "(every point must be an [x, y] pair of finite numbers)."
+                    )
 
         # Older layout_json without these fields (or hand-written JSON) just
         # falls back to portrait / no canvas size, rather than erroring here —
@@ -183,8 +216,21 @@ class PanelCompositor:
         page_orientation = data.get("page_orientation", "portrait")
         canvas_width = data.get("canvas_width")
         canvas_height = data.get("canvas_height")
+        for name, value in (("canvas_width", canvas_width), ("canvas_height", canvas_height)):
+            if value is not None and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(f"Panel Compositor: layout_json's '{name}' must be a positive number.")
 
-        return sorted(panels, key=lambda p: p["order"]), page_orientation, canvas_width, canvas_height
+        try:
+            panels = sorted(panels, key=lambda p: p["order"])
+        except TypeError:
+            raise ValueError("Panel Compositor: every panel's 'order' must be a consistent, sortable type.")
+
+        return panels, page_orientation, canvas_width, canvas_height
 
     @staticmethod
     def _compute_canvas_size(
@@ -225,6 +271,11 @@ class PanelCompositor:
             )
             min_x, min_y, max_x, max_y = bbox_from_polygon(panels[ref_idx]["polygon"])
             bbox_w_norm, bbox_h_norm = max_x - min_x, max_y - min_y
+            if bbox_w_norm <= 0 or bbox_h_norm <= 0:
+                raise ValueError(
+                    "Panel Compositor: canvas_mode 'scale_to_input' can't use a panel with a "
+                    "zero-width or zero-height polygon as its size reference."
+                )
             ref_img = pil_images[ref_idx]
             canvas_w = ref_img.width / bbox_w_norm
             canvas_h = ref_img.height / bbox_h_norm
