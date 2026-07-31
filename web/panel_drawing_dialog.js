@@ -8,6 +8,7 @@ import {
     orderedIds,
     deriveRowGroups,
     loadPresets,
+    invalidatePresetsCache,
     panelsFromPreset,
     presetKeyFromChoice,
     createPresetCombobox,
@@ -714,6 +715,28 @@ function openDrawingDialog(node) {
             selection = null;
             recomputeAutoReadingOrder();
             render();
+        },
+        // Deletes a user-saved preset (never a built-in — see
+        // createPresetCombobox's own guard). Only removes it from the
+        // library; whatever's already drawn on the canvas (even if it was
+        // loaded FROM this exact preset) is untouched — "Load Preset" is a
+        // one-time starting point, not a live binding to the saved entry.
+        onDelete: async (key) => {
+            try {
+                const res = await fetch("/manga/delete_user_layout", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ key }),
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) throw new Error(data.error || `server returned ${res.status}`);
+            } catch (err) {
+                window.alert?.(`Failed to delete preset: ${err.message}`);
+                return;
+            }
+            invalidatePresetsCache();
+            loadedPresets = await loadPresets();
+            presetCombobox.setPresets(loadedPresets);
         },
     });
     sidePanel.appendChild(presetCombobox.el);

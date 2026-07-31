@@ -64,11 +64,19 @@ def _load_user_presets():
 def _rebuild():
     """Recomputes every module-level derived table from the current
     built-in + on-disk user preset data. Called once at import and again
-    after every successful save_user_layout(), so a newly-saved preset is
-    immediately selectable/runnable in the same server process — no
+    after every successful save_user_layout()/delete_user_layout(), so a
+    change is immediately reflected in the same server process — no
     restart needed."""
     global _PRESETS, LAYOUT_NAMES, LAYOUT_CHOICES, LAYOUT_CHOICE_TO_NAME, READING_GROUPS
-    _PRESETS = {**_BUILTIN_PRESETS, **_load_user_presets()}
+    # `is_builtin` is a runtime-only tag for the in-memory merged view (used
+    # by the frontend to decide which presets show a Delete button — never
+    # written back to layouts_user.json, since save_user_layout/
+    # _dump_presets build their own entry dict from scratch rather than
+    # round-tripping through _PRESETS).
+    _PRESETS = {
+        **{name: {**data, "is_builtin": True} for name, data in _BUILTIN_PRESETS.items()},
+        **{name: {**data, "is_builtin": False} for name, data in _load_user_presets().items()},
+    }
     LAYOUT_NAMES = list(_PRESETS.keys())
     # A flat dropdown of built-in + user preset keys gets unwieldy, and
     # ComfyUI's combo widget has no native grouping — so the dropdown shown
@@ -192,13 +200,14 @@ def _slugify(label):
     return slug or "layout"
 
 
-def _dump_user_layouts(data):
+def _dump_presets(data):
     """Compact one-line-per-array formatting matching web/layouts.json's
     hand-authored style (see TODO.md's "ballooned to ~4,000 lines" note) —
     each polygon and the reading_groups value stays on one line instead of
-    plain json.dump's default one-array-element-per-line explosion, so
-    layouts_user.json stays as browsable/hand-editable as its built-in
-    counterpart."""
+    plain json.dump's default one-array-element-per-line explosion. Used
+    for BOTH web/layouts.json and web/layouts_user.json (same schema),
+    keeping either file as browsable/hand-editable as it was before any
+    write this module makes to it."""
     keys = list(data.keys())
     lines = ["{"]
     for ki, key in enumerate(keys):
@@ -217,6 +226,28 @@ def _dump_user_layouts(data):
         lines.append("  }" + trailing)
     lines.append("}")
     return "\n".join(lines) + "\n"
+
+
+def _atomic_write_presets(path, presets_dict):
+    """Writes `presets_dict` (compact-formatted via _dump_presets)
+    atomically to `path` — temp file in the same directory + os.replace +
+    re-parse sanity check, per §9b. Shared by every write this module ever
+    makes to either web/layouts.json or web/layouts_user.json (save and
+    delete, for both user and — since built-in deletion is genuine now,
+    not a separate hide-list — built-in presets alike). Caller is
+    responsible for holding _save_lock."""
+    text = _dump_presets(presets_dict)
+    tmp_path = f"{path}.tmp-{uuid.uuid4().hex}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    with open(path, encoding="utf-8") as f:
+        json.load(f)
 
 
 def save_user_layout(category, label, panels, reading_groups):
@@ -278,20 +309,48 @@ def save_user_layout(category, label, panels, reading_groups):
             entry["reading_groups"] = reading_groups
         existing[key] = entry
 
-        tmp_path = f"{_USER_LAYOUTS_JSON_PATH}.tmp-{uuid.uuid4().hex}"
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(_dump_user_layouts(existing))
-            os.replace(tmp_path, _USER_LAYOUTS_JSON_PATH)
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-
-        # Sanity check: re-read + re-parse what was just written before
-        # reporting success, per §9b step 5.
-        with open(_USER_LAYOUTS_JSON_PATH, encoding="utf-8") as f:
-            json.load(f)
-
+        _atomic_write_presets(_USER_LAYOUTS_JSON_PATH, existing)
         _rebuild()
 
     return key, f"{category} / {label}"
+
+
+def delete_user_layout(key):
+    """Genuinely deletes a single preset, by its raw key (not its
+    "Category / Label" choice string — the caller resolves that, same as
+    anywhere else LAYOUT_CHOICE_TO_NAME is used) — from wherever it
+    actually lives:
+
+    - A USER-saved preset (key not in _BUILTIN_PRESETS) is deleted from
+      web/layouts_user.json, as before.
+    - A BUILT-IN preset is deleted from web/layouts.json itself. Per user
+      request this is real deletion, not a reversible hide (an earlier
+      version of this function recorded hidden built-ins in a separate
+      file instead of touching layouts.json — the user explicitly asked
+      for genuine deletion instead: "I want it to be able to geniouly
+      delete it. not just hide it."). The trade-off, same one the user
+      already accepted when asking for this: a node-pack update ships a
+      fresh web/layouts.json and can silently restore (or remove) any
+      preset in it, built-in deletions included — nothing this function
+      can prevent, since it only controls what's on disk right now.
+
+    Either way, same atomic-write pattern and lock, and same "no undo from
+    the UI" one-way nature §3c already documents for saving.
+    """
+    if not isinstance(key, str) or not key:
+        raise ValueError("key must be a non-empty string")
+
+    with _save_lock:
+        if key in _BUILTIN_PRESETS:
+            del _BUILTIN_PRESETS[key]
+            _atomic_write_presets(_LAYOUTS_JSON_PATH, _BUILTIN_PRESETS)
+            _rebuild()
+            return
+
+        existing = _load_user_presets()
+        if key not in existing:
+            raise ValueError(f"no preset named {key!r} exists")
+        del existing[key]
+
+        _atomic_write_presets(_USER_LAYOUTS_JSON_PATH, existing)
+        _rebuild()

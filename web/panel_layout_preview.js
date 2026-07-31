@@ -76,11 +76,14 @@ export function filterPresetsByQuery(presets, query) {
     return out;
 }
 
+// Each entry is { key, label } — the raw preset key travels alongside the
+// label so callers (createPresetCombobox's delete button) can look up
+// per-preset metadata like is_builtin without a second pass over `presets`.
 function groupByCategory(presets) {
     const byCategory = new Map();
-    for (const data of Object.values(presets)) {
+    for (const [key, data] of Object.entries(presets)) {
         if (!byCategory.has(data.category)) byCategory.set(data.category, []);
-        byCategory.get(data.category).push(data.label);
+        byCategory.get(data.category).push({ key, label: data.label });
     }
     return byCategory;
 }
@@ -91,8 +94,8 @@ function groupByCategory(presets) {
 // sequentially (the node picker's prev/next step buttons).
 export function flatPresetChoices(presets) {
     const out = [];
-    for (const [category, labels] of groupByCategory(presets)) {
-        for (const label of labels) out.push(`${category} / ${label}`);
+    for (const [category, entries] of groupByCategory(presets)) {
+        for (const { label } of entries) out.push(`${category} / ${label}`);
     }
     return out;
 }
@@ -127,7 +130,7 @@ export function flatPresetChoices(presets) {
 // for that dialog's Load Preset control.
 const COMBOBOX_PANEL_Z_INDEX = 1000000;
 
-export function createPresetCombobox({ initialValue, onSelect }) {
+export function createPresetCombobox({ initialValue, onSelect, onDelete }) {
     const wrap = document.createElement("div");
     wrap.style.cssText = "position: relative;";
 
@@ -197,7 +200,7 @@ export function createPresetCombobox({ initialValue, onSelect }) {
             highlightedIndex = -1;
             return;
         }
-        for (const [category, labels] of byCategory) {
+        for (const [category, entries] of byCategory) {
             const header = document.createElement("div");
             header.textContent = category;
             header.style.cssText = `
@@ -208,17 +211,24 @@ export function createPresetCombobox({ initialValue, onSelect }) {
                 color: #6a6880;
             `;
             panel.appendChild(header);
-            for (const label of labels) {
+            for (const { key, label } of entries) {
                 const value = `${category} / ${label}`;
                 const row = document.createElement("div");
-                row.textContent = label;
                 row.dataset.value = value;
                 row.style.cssText = `
                     padding: 4px 8px;
                     font-size: 11px;
                     cursor: pointer;
                     color: #e6e6e6;
+                    display: flex;
+                    align-items: center;
+                    gap: 4px;
                 `;
+                const labelSpan = document.createElement("span");
+                labelSpan.textContent = label;
+                labelSpan.style.cssText = "flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis;";
+                row.appendChild(labelSpan);
+
                 const idx = rows.length;
                 row.addEventListener("mouseenter", () => setHighlight(idx));
                 // mousedown (not click) + preventDefault, so the browser
@@ -228,6 +238,54 @@ export function createPresetCombobox({ initialValue, onSelect }) {
                     e.preventDefault();
                     commitSelection(value);
                 });
+
+                // Delete button — shown whenever the caller actually wired
+                // onDelete (the dialog's Load Preset control and the
+                // node's own picker both do; a combobox used read-only
+                // somewhere else just wouldn't pass it). Per user request,
+                // this covers BUILT-IN presets too, not just user-saved
+                // ones, and genuinely deletes either (not a reversible
+                // hide — an earlier version recorded hidden built-ins in a
+                // separate file instead of touching layouts.json, but the
+                // user explicitly asked for real deletion instead). Wording
+                // still differs by `is_builtin` (a runtime-only tag
+                // presets/layouts.py's _rebuild() adds to the merged view)
+                // only to flag that a built-in could come back on a
+                // node-pack update — both are equally "delete", both
+                // equally permanent right now.
+                if (onDelete) {
+                    const isBuiltin = presets[key]?.is_builtin === true;
+                    const deleteBtn = document.createElement("button");
+                    deleteBtn.type = "button";
+                    deleteBtn.textContent = "×";
+                    deleteBtn.title = `Delete "${value}"`;
+                    deleteBtn.style.cssText = `
+                        flex: 0 0 auto;
+                        background: transparent;
+                        color: #9a9ab0;
+                        border: none;
+                        font-size: 13px;
+                        line-height: 1;
+                        cursor: pointer;
+                        padding: 2px 4px;
+                    `;
+                    deleteBtn.addEventListener("mouseenter", () => (deleteBtn.style.color = "#d94848")); // matches panel_drawing_dialog.js's COLOR_INVALID
+                    deleteBtn.addEventListener("mouseleave", () => (deleteBtn.style.color = "#9a9ab0"));
+                    // mousedown, same reasoning as row selection above, plus
+                    // stopPropagation so it doesn't also trigger the row's
+                    // own mousedown-select handler right above it.
+                    deleteBtn.addEventListener("mousedown", (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const confirmMsg = isBuiltin
+                            ? `Delete the built-in preset "${value}"? This removes it from web/layouts.json — a future node-pack update could restore (or also remove) it, but right now this can't be undone from here.`
+                            : `Delete the preset "${value}"? This can't be undone.`;
+                        if (!window.confirm(confirmMsg)) return;
+                        onDelete(key, value);
+                    });
+                    row.appendChild(deleteBtn);
+                }
+
                 panel.appendChild(row);
                 rows.push({ value, el: row });
             }
@@ -701,9 +759,43 @@ app.registerExtension({
                 w.callback?.(value, app.canvas, node, null, null);
                 redraw();
             }
+            // Deletes a user-saved preset (never a built-in — see
+            // createPresetCombobox's own guard, which only shows the
+            // delete button for presets tagged is_builtin: false).
+            // Confirmed by the browser's native confirm() one level up, in
+            // createPresetCombobox itself, before this ever runs.
+            async function deletePreset(key, value) {
+                try {
+                    const res = await fetch("/manga/delete_user_layout", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ key }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok || !data.success) throw new Error(data.error || `server returned ${res.status}`);
+                } catch (err) {
+                    window.alert?.(`Failed to delete preset: ${err.message}`);
+                    return;
+                }
+                invalidatePresetsCache();
+                presets = await loadPresets();
+                presetCombobox.setPresets(presets);
+                const presetWidget = node.widgets.find((w) => w.name === "layout_preset");
+                if (presetWidget?.value === value) {
+                    // The currently-selected preset was just deleted out from
+                    // under the node — fall back to the first available
+                    // choice rather than leaving layout_preset pointing at
+                    // something that no longer exists (same staleness class
+                    // of bug fixed earlier for saves, just from the other
+                    // direction).
+                    const fallback = flatPresetChoices(presets)[0];
+                    if (fallback) commitPresetSelection(fallback);
+                }
+            }
             const presetCombobox = createPresetCombobox({
                 initialValue: "",
                 onSelect: commitPresetSelection,
+                onDelete: deletePreset,
             });
             presetCombobox.el.style.cssText += "flex: 1 1 auto; min-width: 0;";
 

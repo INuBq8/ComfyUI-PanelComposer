@@ -49,7 +49,6 @@
   "two_diagonal_split": {
     "category": "Diagonal",
     "label": "Two Panel Diagonal",
-    "_comment": "Diagonal cut instead of a straight split — both panels are trapezoids.",
     "panels": [
       [[0.0, 0.0], [1.0, 0.0], [1.0, 0.7], [0.0, 0.3]],
       [[0.0, 0.3], [1.0, 0.7], [1.0, 1.0], [0.0, 1.0]]
@@ -59,7 +58,6 @@
   "three_panel_cascade_diagonal": {
     "category": "Diagonal",
     "label": "Three Panel Cascade",
-    "_comment": "Three slanted parallelograms, all sharing the same diagonal slope — a common 'dynamic/action' cascade layout in manga.",
     "panels": [
       [[0.0, 0.0], [0.3333, 0.0], [0.4533, 1.0], [0.0, 1.0]],
       [[0.3333, 0.0], [0.6667, 0.0], [0.7867, 1.0], [0.4533, 1.0]],
@@ -70,7 +68,6 @@
   "three_wedge_top_split": {
     "category": "Wedge & Notch",
     "label": "Wedge Top + Notched Bottom",
-    "_comment": "Three non-rectangular panels on top — the two outer ones are trapezoids (inner edge slants outward toward the bottom), the middle one is a wedge that tapers down and dips below them — plus one big panel below with a matching notch cut into its top. Roughly: |__\\_/__| over a full-width panel.",
     "panels": [
       [[0.0, 0.0], [0.3, 0.0], [0.4, 0.35], [0.0, 0.35]],
       [[0.3, 0.0], [0.7, 0.0], [0.6, 0.35], [0.53, 0.5], [0.47, 0.5], [0.4, 0.35]],
@@ -82,7 +79,6 @@
   "corner_inset_l_shape": {
     "category": "Inset & Concave",
     "label": "L-Shape + Corner Inset",
-    "_comment": "Concave L-shaped main panel wrapping a small square inset panel in the bottom-right corner (e.g. a reaction/detail shot over the main scene).",
     "panels": [
       [[0.0, 0.0], [1.0, 0.0], [1.0, 0.65], [0.65, 0.65], [0.65, 1.0], [0.0, 1.0]],
       [[0.65, 0.65], [1.0, 0.65], [1.0, 1.0], [0.65, 1.0]]
@@ -92,7 +88,6 @@
   "two_floating_panels": {
     "category": "Floating",
     "label": "Two Floating Panels",
-    "_comment": "Webtoon-style floating panels — none of the panels touch each other or the canvas edges, so the surrounding area is just page background. Panels are offset rather than perfectly stacked/centered for a more organic feel.",
     "panels": [
       [[0.08, 0.06], [0.72, 0.06], [0.72, 0.42], [0.08, 0.42]],
       [[0.28, 0.54], [0.92, 0.54], [0.92, 0.9], [0.28, 0.9]]
