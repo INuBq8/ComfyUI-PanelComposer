@@ -57,7 +57,7 @@ def _load_user_presets():
         # since this runs unconditionally at import time. Degrade
         # instead: log it and fall back to "no user presets," the same
         # as a missing file, so built-ins keep working regardless.
-        print(f"[ComfyUI-Manga] WARNING: {_USER_LAYOUTS_JSON_PATH} is corrupted ({err}) — "
+        print(f"[ComfyUI-PanelComposer] WARNING: {_USER_LAYOUTS_JSON_PATH} is corrupted ({err}) — "
               f"ignoring it, built-in presets are unaffected. Fix or delete the file to restore your saved presets.")
         return {}
 
@@ -83,7 +83,7 @@ def _validate_presets(raw_presets, source_label):
             valid[name] = data
         else:
             print(
-                f"[ComfyUI-Manga] WARNING: skipping malformed preset {name!r} in "
+                f"[ComfyUI-PanelComposer] WARNING: skipping malformed preset {name!r} in "
                 f"{source_label} (needs string 'category'/'label' and a list "
                 f"'panels') — fix or remove this entry to restore it."
             )

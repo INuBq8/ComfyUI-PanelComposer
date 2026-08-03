@@ -1847,7 +1847,7 @@ function openDrawingDialog(node) {
 }
 
 app.registerExtension({
-    name: "Manga.PanelDrawingDialog",
+    name: "PanelComposer.PanelDrawingDialog",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "PanelLayoutProvider") return;
 

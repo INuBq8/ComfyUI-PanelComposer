@@ -679,7 +679,7 @@ function drawLayoutPreview(canvas, panels, pageAspectRatio) {
 }
 
 app.registerExtension({
-    name: "Manga.PanelLayoutPreview",
+    name: "PanelComposer.PanelLayoutPreview",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "PanelLayoutProvider") return;
 
@@ -965,7 +965,7 @@ app.registerExtension({
                     try {
                         node.setSize(node.computeSize());
                     } catch (err) {
-                        console.warn("Manga.PanelLayoutPreview: couldn't resize node after hiding layout_preset", err);
+                        console.warn("PanelComposer.PanelLayoutPreview: couldn't resize node after hiding layout_preset", err);
                     }
                 }
 

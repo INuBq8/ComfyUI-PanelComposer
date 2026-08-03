@@ -1,4 +1,4 @@
-# ComfyUI-Manga
+# ComfyUI-PanelComposer
 
 Custom nodes for generating multi-panel manga/comic pages in ComfyUI: pick (or draw) a panel layout, get per-panel dimensions to feed your generation nodes, then composite the generated panel images back into one finished page.
 
