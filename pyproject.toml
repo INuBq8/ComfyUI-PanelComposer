@@ -1,6 +1,6 @@
 [project]
 name = "ComfyUI-PanelComposer"
-description = ""
+description = "ComfyUI nodes that turn a panel layout (45+ presets, or hand-drawn) into per-panel generation dimensions, then composite the generated panel images back into one finished comic/manga page - including non-rectangular panel shapes."
 version = "1.0.0"
 license = "MIT" 
 # classifiers = [
