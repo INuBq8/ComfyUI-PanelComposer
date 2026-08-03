@@ -11,8 +11,8 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "PanelLayoutProvider": "Panel Layout Provider (Manga)",
-    "PanelCompositor": "Panel Compositor (Manga)",
+    "PanelLayoutProvider": "Panel Layout Provider (PanelComposer)",
+    "PanelCompositor": "Panel Compositor (PanelComposer)",
     "ListGetItem": "List Get Item",
     "TupleUnpack": "Tuple Unpack",
 }

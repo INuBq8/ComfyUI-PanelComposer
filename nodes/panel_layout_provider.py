@@ -35,7 +35,7 @@ class PanelLayoutProvider:
     decimal 0xRRGGBB integers) that can be fed straight into an
     exact-color-match/mask node."""
 
-    CATEGORY = "Manga/Layout"
+    CATEGORY = "PanelComposer/Layout"
     FUNCTION = "get_layout"
     RETURN_TYPES = ("STRING", "PANEL_DIMENSIONS", "IMAGE", "COLOR_LIST")
     RETURN_NAMES = ("layout_json", "panel_dimensions", "area_image", "area_colors")
@@ -121,4 +121,4 @@ class PanelLayoutProvider:
 
 
 NODE_CLASS_MAPPINGS = {"PanelLayoutProvider": PanelLayoutProvider}
-NODE_DISPLAY_NAME_MAPPINGS = {"PanelLayoutProvider": "Panel Layout Provider (Manga)"}
+NODE_DISPLAY_NAME_MAPPINGS = {"PanelLayoutProvider": "Panel Layout Provider (PanelComposer)"}

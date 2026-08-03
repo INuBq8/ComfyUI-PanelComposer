@@ -18,7 +18,7 @@ export function loadPresets() {
         presetsPromise = fetch(LAYOUTS_URL)
             .then((r) => r.json())
             .catch((err) => {
-                console.error("Manga.PanelLayoutPreview: failed to load layouts", err);
+                console.error("PanelComposer.PanelLayoutPreview: failed to load layouts", err);
                 return {};
             });
     }

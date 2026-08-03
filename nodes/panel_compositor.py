@@ -20,7 +20,7 @@ class PanelCompositor:
     """Stitches user-generated per-panel images into one page, per layout_json.
     Performs no generation; geometry comes entirely from Node 1's output."""
 
-    CATEGORY = "Manga/Compositing"
+    CATEGORY = "PanelComposer/Compositing"
     FUNCTION = "composite"
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("page_image",)
@@ -285,4 +285,4 @@ class PanelCompositor:
 
 
 NODE_CLASS_MAPPINGS = {"PanelCompositor": PanelCompositor}
-NODE_DISPLAY_NAME_MAPPINGS = {"PanelCompositor": "Panel Compositor (Manga)"}
+NODE_DISPLAY_NAME_MAPPINGS = {"PanelCompositor": "Panel Compositor (PanelComposer)"}
