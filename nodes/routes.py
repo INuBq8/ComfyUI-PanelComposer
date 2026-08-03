@@ -15,7 +15,7 @@ from ..presets.layouts import delete_user_layout, save_user_layout
 routes = PromptServer.instance.routes
 
 
-@routes.get("/manga/all_layouts")
+@routes.get("/panelcomposer/all_layouts")
 async def get_all_layouts(request):
     # Re-imported fresh each request rather than captured at module-import
     # time — save_user_layout() rebinds presets.layouts._PRESETS to a new
@@ -26,7 +26,7 @@ async def get_all_layouts(request):
     return web.json_response(layouts._PRESETS)
 
 
-@routes.post("/manga/save_user_layout")
+@routes.post("/panelcomposer/save_user_layout")
 async def post_save_user_layout(request):
     try:
         body = await request.json()
@@ -50,7 +50,7 @@ async def post_save_user_layout(request):
     return web.json_response({"success": True, "key": key, "choice": choice})
 
 
-@routes.post("/manga/delete_user_layout")
+@routes.post("/panelcomposer/delete_user_layout")
 async def post_delete_user_layout(request):
     try:
         body = await request.json()

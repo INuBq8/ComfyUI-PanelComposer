@@ -54,11 +54,11 @@ import {
 // surfacing even though it isn't technically broken. Step 7 done: the
 // save flow (§7/§8) — a category/label prompt shown once §4/§5's
 // repair+validation already pass, POSTing to the new
-// /manga/save_user_layout backend route (nodes/routes.py, backed by
+// /panelcomposer/save_user_layout backend route (nodes/routes.py, backed by
 // presets/layouts.py's save_user_layout — see PHASE2_SPEC.md §9b for the
 // atomic-write requirement that function implements), then writing the
 // resulting preset straight back into the node's own picker via
-// node.mangaApplySavedLayout (a hook panel_layout_preview.js attaches per
+// node.panelComposerApplySavedLayout (a hook panel_layout_preview.js attaches per
 // node instance) so it's immediately selected without the user having to
 // find it in the dropdown. See the readingOrderManuallySet declaration
 // above for how a manual reading-order override is represented in the
@@ -723,7 +723,7 @@ function openDrawingDialog(node) {
         // one-time starting point, not a live binding to the saved entry.
         onDelete: async (key) => {
             try {
-                const res = await fetch("/manga/delete_user_layout", {
+                const res = await fetch("/panelcomposer/delete_user_layout", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ key }),
@@ -958,7 +958,7 @@ function openDrawingDialog(node) {
         savePromptConfirmBtn.disabled = true;
         try {
             const payload = buildSavePayload(category, label);
-            const res = await fetch("/manga/save_user_layout", {
+            const res = await fetch("/panelcomposer/save_user_layout", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
@@ -970,7 +970,7 @@ function openDrawingDialog(node) {
             // §10: reflect the new preset as selected on the node
             // immediately, without the user having to find it in the
             // dropdown themselves.
-            node.mangaApplySavedLayout?.(data.choice);
+            node.panelComposerApplySavedLayout?.(data.choice);
             close();
         } catch (err) {
             savePromptStatus.textContent = `Save failed: ${err.message}`;

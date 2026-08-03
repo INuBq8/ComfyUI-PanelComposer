@@ -4,13 +4,13 @@ import { app } from "../../scripts/app.js";
 // backend route rather than layouts.json directly (Phase 2, PHASE2_SPEC.md
 // §10) — presets/layouts.py merges the built-in web/layouts.json with any
 // user-saved presets from web/layouts_user.json into one dict, and this
-// route (/manga/all_layouts) is that same merged dict, keeping "how the
+// route (/panelcomposer/all_layouts) is that same merged dict, keeping "how the
 // two files combine" in exactly one place (Python) rather than duplicating
 // the merge here. Fetched once and cached; every node instance's redraw
 // awaits the same promise. invalidatePresetsCache() clears the cache after
 // a new preset is saved through the drawing dialog, so the next
 // loadPresets() call picks it up instead of serving stale data forever.
-const LAYOUTS_URL = "/manga/all_layouts";
+const LAYOUTS_URL = "/panelcomposer/all_layouts";
 let presetsPromise = null;
 
 export function loadPresets() {
@@ -766,7 +766,7 @@ app.registerExtension({
             // createPresetCombobox itself, before this ever runs.
             async function deletePreset(key, value) {
                 try {
-                    const res = await fetch("/manga/delete_user_layout", {
+                    const res = await fetch("/panelcomposer/delete_user_layout", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ key }),
@@ -924,7 +924,7 @@ app.registerExtension({
             // otherwise this node's own picker would keep serving the
             // pre-save snapshot forever) before selecting, via the same
             // commitPresetSelection path any other picker selection uses.
-            node.mangaApplySavedLayout = function (choiceValue) {
+            node.panelComposerApplySavedLayout = function (choiceValue) {
                 invalidatePresetsCache();
                 loadPresets().then((loaded) => {
                     presets = loaded;

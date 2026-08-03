@@ -317,7 +317,7 @@ def save_user_layout(category, label, panels, reading_groups):
     """Persists a new user-drawn preset to web/layouts_user.json — always a
     new entry (PHASE2_SPEC.md §3c: save never overwrites an existing one).
     `panels` is a list of polygons (list of [x, y] points) — the caller
-    (the /manga/save_user_layout route) is responsible for winding
+    (the /panelcomposer/save_user_layout route) is responsible for winding
     normalization and validation already having happened client-side;
     this function does its own minimal shape checks as the actual
     disk-write boundary, not a re-run of the full validator.

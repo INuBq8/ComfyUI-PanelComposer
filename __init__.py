@@ -1,7 +1,7 @@
 from .nodes.panel_layout_provider import PanelLayoutProvider
 from .nodes.panel_compositor import PanelCompositor
 from .nodes.list_utils import ListGetItem, TupleUnpack
-from .nodes import routes  # noqa: F401 - side-effecting import, registers /manga/* HTTP routes
+from .nodes import routes  # noqa: F401 - side-effecting import, registers /panelcomposer/* HTTP routes
 
 NODE_CLASS_MAPPINGS = {
     "PanelLayoutProvider": PanelLayoutProvider,
