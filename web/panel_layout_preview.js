@@ -963,7 +963,8 @@ app.registerExtension({
                     // this only changes how much vertical space it draws as.
                     presetWidget.computeSize = () => [0, -4];
                     try {
-                        node.setSize(node.computeSize());
+                        const fit = node.computeSize(); // keep the node's own size; only grow if the contents need more
+                        node.setSize([Math.max(node.size[0], fit[0]), Math.max(node.size[1], fit[1])]);
                     } catch (err) {
                         console.warn("PanelComposer.PanelLayoutPreview: couldn't resize node after hiding layout_preset", err);
                     }

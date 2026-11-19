@@ -402,6 +402,11 @@ def build_panel_mask(polygon_norm, canvas_w, canvas_h, gutter_px):
     if gutter_px > 0:
         erosion_radius = max(1, gutter_px // 2)
         kernel_size = erosion_radius * 2 + 1
-        mask = mask.filter(ImageFilter.MinFilter(kernel_size))
+        try:  # same square-kernel erosion as MinFilter, but OpenCV's runs in milliseconds instead of seconds
+            import cv2
+            eroded = cv2.erode(np.asarray(mask), np.ones((kernel_size, kernel_size), np.uint8), borderType=cv2.BORDER_REPLICATE)
+            mask = Image.fromarray(eroded)
+        except ImportError:
+            mask = mask.filter(ImageFilter.MinFilter(kernel_size))
 
     return mask.filter(ImageFilter.GaussianBlur(radius=1.2))
