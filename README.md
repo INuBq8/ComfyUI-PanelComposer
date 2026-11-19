@@ -8,6 +8,7 @@ Custom nodes for generating multi-panel manga/comic pages in ComfyUI: pick (or d
 |---|---|
 | **Panel Layout Provider** | Outputs a layout's panel geometry (`layout_json`), a per-panel `(width, height)` list (`panel_dimensions`) sized to your target resolution, and a flat-color region map (`area_image` / `area_colors`) for regional conditioning. Shows a live preview of the page on the node itself. |
 | **Panel Compositor** | Takes the generated panel images + `layout_json` and stitches them into one page, with configurable canvas size, fit mode (cover/contain/stretch/fit_to_shape), scaling algorithm, and gutters. |
+| **Panel Fit** | Zoom and pan each panel image inside its panel in a visual editor before compositing. Outputs one image per panel at the panel's exact size, so Panel Compositor's `cover` mode pastes them as placed. |
 | **List Get Item** | Indexes into a list/tuple (e.g. pull one panel's `(w, h)` out of `panel_dimensions`). |
 | **Tuple Unpack** | Splits a tuple/list into up to 4 separate outputs (e.g. a panel's `(w, h)` into separate `width`/`height` sockets). |
 
@@ -51,6 +52,17 @@ Custom nodes for generating multi-panel manga/comic pages in ComfyUI: pick (or d
 - **contain** — scales the image down, keeping its aspect ratio, until it fits entirely inside the bounding box, padding the leftover space with `gutter_color`. No distortion, no cropping.
 - **stretch** — resizes the image to exactly the bounding box's width and height, ignoring its original aspect ratio — so it squashes/stretches to fit. No cropping, no padding.
 - **fit_to_shape** (**experimental**) — warps the image so its own corners and edges land directly on the panel's actual polygon vertices/edges, instead of filling a rectangle and cropping. On a plain rectangular panel this looks the same as `stretch`. The difference only shows on angled/non-rectangular panels (wedges, diagonals, notches): `cover`/`contain`/`stretch` still fill a rectangle and let the panel's angled edge slice through it, so part of the image gets cut off by that angle — `fit_to_shape` instead bends the whole image to follow the panel's edges, so the full image reads cleanly inside the odd shape with nothing sliced off. Only verified against the built-in presets — check the result if you use it on a custom/drawn shape.
+
+### Panel Fit
+
+| Parameter | What it does |
+|---|---|
+| `images` | The panel images, as a list (one per panel) or a single batch, in panel order. |
+| `layout_json` | From Panel Layout Provider. |
+| `fill_color` | Colour for any part of a panel the image doesn't cover after zooming out or panning. |
+| `fits` | Per-panel zoom and offset, written by the editor (`Fit Panels` button). Run the workflow once so the editor has the images to show. |
+
+Feed its output into Panel Compositor with `fit_mode` set to `cover`.
 
 ### List Get Item
 
